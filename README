@@ -1,0 +1,319 @@
+NFS Test Suite
+==============
+Provides a set of tools for testing either the NFS client or the NFS server,
+included tests focused mainly on testing the client. These tools include the
+following:
+
+    Test utilities package (nfstest)
+    ================================
+    Provides a set of tools for testing either the NFS client or the NFS server,
+    most of the functionality is focused mainly on testing the client.
+    These tools include the following:
+
+        - Process command line arguments
+        - Provide functionality for PASS/FAIL
+        - Provide test grouping functionality
+        - Provide multiple client support
+        - Logging mechanism
+        - Debug info control
+        - Mount/Unmount control
+        - Create files/directories
+        - Provide mechanism to start a packet trace
+        - Provide mechanism to simulate a network partition
+        - Support for pNFS testing
+
+
+    Packet trace package (packet)
+    =============================
+    Testing NFS has mostly been done using test tools like connectathon test suite,
+    filebench, iozone and others. But mostly using the connectathon test suite.
+    These are good tools for testing, but they are outdated and they also cannot
+    be used for testing pNFS thoroughly.
+
+    For example, you can run the connectathon test suite on pNFS, it runs, it passes
+    all the tests -- but how can we make sure that pNFS worked properly. How can we
+    verify that a layout is granted, but not only that a layout is granted, what
+    type of layout was granted (read, rw). Did the client sent IO to the data
+    servers or to the metadata server.
+
+    The Packet trace module takes a trace file created by tcpdump and unpacks
+    the contents of each packet. You can decode one packet at a time, or do a
+    search for specific packets. The main difference between this modules and
+    other tools used to decode trace files is that you can use this module to
+    completely automate your tests.
+
+    How does it work? It opens the trace file and reads one record at a time
+    keeping track where each record starts. This way, very large trace files
+    can be opened without having to wait for the file to load and avoid loading
+    the whole file into memory.
+
+    Packet layers supported:
+        - Ethernet II (RFC 894)
+        - IP layer (supports v4 only)
+        - TCP layer
+        - RPC layer
+        - NFS v4.0
+        - NFS v4.1 including pNFS file layouts
+
+
+Requirements and limitations
+============================
+In order to run the included tests, the user id in all the client hosts must
+have access to run commands as root using the 'sudo' command without the need
+for a password, this includes the host where the test is being executed.
+This is used to run commands like 'mount' and 'umount'. Furthermore, the
+user id must be able to ssh to remote hosts without the need for a password
+if test requires the use of multiple clients.
+
+Network partition is simulated by the use of 'iptables', please be advised
+that after every test is run the iptables is flushed and reset so any rules
+previously setup will be lost. Currently, there is no mechanism to restore
+the iptables rules to their original state.
+
+Tests
+=====
+    nfstest_cache - NFS client side caching tests
+    =============================================
+    Verify consistency of attribute caching by varying acregmin, acregmax,
+    acdirmin, acdirmax and actimo. Verify consistency of data caching by varying
+    acregmin, acregmax, acdirmin, acdirmax and actimo.
+
+    Valid for any version of NFS
+
+
+    nfstest_delegation - Delegation tests
+    =====================================
+    Basic delegation tests verify that a correct delegation is granted when
+    opening a file for reading or writing. Also, another OPEN should not be
+    sent for the same file when the client is holding a delegation. Verify
+    that the stateid of all I/O operations should be the delegation stateid.
+    Reads from a different process on the same file should not cause the client
+    to send additional READ packets when the client is holding a read delegation.
+    Furthermore, a LOCK packet should not be sent to the server when the client
+    is holding a delegation.
+
+    Recall delegation tests verify the delegation is recalled when a conflicting
+    operation is sent to the server from a different client. Conflicting operations
+    are reading, writing and changing the permissions on the same file. Note, that
+    reading a file from a different client can only recall a read delegation.
+    Also, verify that a delegation is not recalled when a different client is
+    granted a read delegation. After a delegation is recalled, the client should
+    send an OPEN with CLAIM_DELEGATE_CUR before returning the delegation and the
+    stateid should be the same as the original OPEN stateid. Also, a delegation
+    should not be granted when re-opening the file right before returning
+    the delegation. Verify client flushes all written data before returning
+    the WRITE delegation. The LOCK should be sent as well right before returning
+    a delegation which has been recalled. A delegation should not be granted
+    on the second client who cause the delegation recall on the first client.
+
+    Valid for any version of NFS granting delegations
+
+
+    nfstest_dio - Direct I/O tests
+    ==============================
+    Functional direct I/O tests verify that every READ/WRITE is sent to the server
+    instead of the client caching the requests. Client bypasses read ahead by
+    sending the READ with only the requested bytes. Verify the client correctly
+    handles eof marker when reading the whole file. Verify client ignores delegation
+    while writing a file.
+
+    Direct I/O on pNFS tests verify the client sends the READ/WRITE to the correct
+    DS or the MDS if using a PAGESIZE aligned buffer or not, respectively.
+
+    Direct I/O data correctness tests verify that a file written with buffered I/O
+    is read correctly with direct I/O. Verify that a file written with direct I/O
+    is read correctly with buffered I/O.
+
+    Vectored I/O tests verify coalescence of multiple vectors into one READ/WRITE
+    packet when all vectors are PAGESIZE aligned. Vectors with different alignments
+    are sent on separate packets.
+
+    Valid for NFSv4.0 and NFSv4.1 including pNFS
+
+
+    nfstest_pnfs - Basic pNFS functional tests
+    ==========================================
+    Verify basic pNFS functionality for file (both READ and WRITE), including
+    opening a second file within the same mount and having a lock on the file.
+    Also, verify basic pNFS functionality for a file opened for both READ and
+    WRITE while reading the file first and then writing to it or the other way
+    around by writing to the file fist and then reading the file. These tests
+    verify proper functionality of pNFS and NFSv4.1 as well:
+
+        - Verify EXCHANGE_ID is sent to MDS
+        - Verify CREATE_SESSION is sent to MDS
+        - Verify LAYOUTGET is sent to MDS (check layout type, iomode, layout range)
+        - Verify GETDEVICEINFO is sent to MDS
+        - Verify EXCHANGE_ID is sent to the correct DS
+        - Verify CREATE_SESSION is sent to DS
+        - Verify READ/WRITE is sent to DS (check correct stateid, correct offset and size)
+        - Verify no GETATTR is sent to DS
+
+    Only valid using NFSv4.1 with pNFS enabled and file layout type
+
+
+    nfstest_posix - POSIX file system level access tests
+    ====================================================
+    Verify POSIX file system level access over the specified path using
+    positive and negative testing.
+
+    Valid for any version of NFS
+
+
+Installation
+============
+1. Install package using one of the following methods:
+   a. Install the rpm as root:
+      # rpm -i NFStest-1.0.1-1.noarch.rpm
+
+      All manual pages are available
+      $ man nfstest
+
+      Run tests:
+      $ nfstest_pnfs --help
+
+   b. Untar the tarball:
+      $ cd ~
+      $ tar -zxvf NFStest-1.0.1.tar.gz
+
+      The tests can run without installation, just set the python path
+      environment variable:
+      $ export PYTHONPATH=~/NFStest-1.0.1
+      $ cd NFStest-1.0.1/test
+      $ ./nfstest_pnfs --help
+
+      Or install to standard python site-packages and executable directories:
+      $ cd ~/NFStest-1.0.1
+      $ sudo python setup.py install
+
+      All manual pages are available
+      $ man nfstest
+
+      Run tests:
+      $ nfstest_pnfs --help
+
+   c. Clone the git repository:
+      $ cd ~
+      $ git clone git://git.linux-nfs.org/projects/mora/nfstest.git
+
+      The tests can run without installation, just set the python path
+      environment variable:
+      $ export PYTHONPATH=~/nfstest
+      $ cd nfstest/test
+      $ ./nfstest_pnfs --help
+
+      Or install to standard python site-packages and executable directories:
+      $ cd ~/nfstest
+      $ sudo python setup.py install
+
+      All manual pages are available
+      $ man nfstest
+
+      Run tests:
+      $ nfstest_pnfs --help
+
+2. Make sure user running the tests can run commands using 'sudo' without
+   the need for a password.
+
+3. Make sure user running the tests can run commands remotely using 'ssh'
+   without the need for a password. This is only needed for tests which
+   require multiple clients.
+
+4. Create the mount point specified by the --mtpoint (default: /mnt/t) option
+   on all the clients.
+   $ sudo mkdir /mnt/t
+   $ sudo chmod 777 /mnt/t
+
+
+Run the tests
+=============
+   The only required option is --server
+   $ nfstest_pnfs --server 192.168.0.11
+
+   Required options are --server and --client
+   $ nfstest_cache --server 192.168.0.11 --client 192.168.0.20
+
+   Testing with different values of --acmin and --acmax (this takes a long time)
+   $ nfstest_cache --server 192.168.0.11 --client 192.168.0.20 --acmin 10,20 --acmax 20,30,60,80
+
+   The only required option is --server but only the basic delegation tests will
+   be run. In order to run the recall tests the --client option must be used
+   $ nfstest_delegation --server 192.168.0.11 --client 192.168.0.20
+
+   The only required option is --server
+   $ nfstest_dio --server 192.168.0.11
+
+   The only required option is --server
+   $ nfstest_posix --server 192.168.0.11
+
+
+Useful options
+==============
+--help
+   All tests have this option to display usage information and options available
+
+--createlog
+   Create log file when specified
+
+--keeptraces
+   Do not remove any trace files at the end of execution
+
+--verbose <none|opts|info|debug|all|intbitmask>
+   Verbose level for info/debug messages
+
+   Example:
+       $ nfstest_posix --server 192.168.0.11 --verbose all
+       $ nfstest_posix --server 192.168.0.11 --verbose 0x0F
+
+--runtest <[^]testname1[,testname2[,...]]>
+   Comma separated list of tests to run, if the first character on the list
+   is '^' then run all the tests except the ones listed.
+
+   Example:
+       Runt only the access, chdir, creat and fcntl tests
+       $ nfstest_posix --server 192.168.0.11 --runtest access,chdir,creat,fcntl
+
+       Runt all the tests except for open and chmod
+       $ nfstest_posix --server 192.168.0.11 --runtest ^open,chmod
+
+--tverbose <group|normal|verbose>
+   Verbose level for test messages (default: normal)
+   When tverbose=group, only the test groups are displayed as PASS if all the
+   tests in the group passed, otherwise it will FAIL. In some of the tests
+   tverbose could be 'verbose' for a greater level of verbosity in which a
+   particular test have many sub-tests (>100)
+
+   Example:
+       $ nfstest_posix --server 192.168.0.11
+       *** Verify POSIX API access() on NFSv4
+           PASS: access - file access allowed with mode F_OK
+           PASS: access - file access not allowed with mode F_OK for a non-existent file
+           PASS: access - file access allowed with mode R_OK for file with permissions 0777
+           PASS: access - file access allowed with mode W_OK for file with permissions 0777
+           PASS: access - file access allowed with mode X_OK for file with permissions 0777
+           ...
+
+       $ nfstest_posix --server 192.168.0.11 --tverbose group
+           PASS: Verify POSIX API access() on NFSv4 (58 passed, 0 failed)
+
+--bugmsgs <filename>
+   File containing test messages to mark as bugs if they failed. When at least
+   one of the tests fails the exit code is set to 1. When this option is
+   specified, all known bugs are not counted as failures so the whole test
+   execution is not failed. If the known bugs actually passed, using this
+   option will fail the test to let the user know that the bug has been fixed.
+
+--ignore
+   Ignore all bugs given by bugmsgs. If this option is specified all failures
+   given by bugmsgs are ignored. On the other hand, if a test passes which is
+   marked as a bug, using this option the test will not failed as when using
+   the bugmsgs option alone.
+
+--nfsdebug <flags>
+   Set NFS kernel debug flags and save log messages. Use any of the valid flags
+   given for module 'nfs' on command 'rpcdebug'.
+
+--rpcdebug <flags>
+   Set RPC kernel debug flags and save log messages. Use any of the valid flags
+   given for module 'rpc' on command 'rpcdebug'.
+

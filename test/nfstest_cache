@@ -1,0 +1,596 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2012 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import traceback
+import nfstest_config as c
+from time import time, sleep
+from nfstest.test_util import TestUtil
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2012 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> --client <client> [options]
+
+NFS client side caching tests
+=============================
+Verify consistency of attribute caching by varying acregmin, acregmax,
+acdirmin, acdirmax and actimo. Verify consistency of data caching by varying
+acregmin, acregmax, acdirmin, acdirmax and actimo.
+
+Valid for any version of NFS.
+
+Examples:
+    Required options are --server and --client
+    $ %prog --server 192.168.0.11 --client 192.168.0.20
+
+    Testing with different values of --acmin and --acmax (this takes a long time)
+    $ %prog --server 192.168.0.11 --client 192.168.0.20 --acmin 10,20 --acmax 20,30,60,80
+
+Notes:
+    The user id in the local host and the host specified by --client must
+    have access to run commands as root using the 'sudo' command without
+    the need for a password.
+
+    The user id must be able to 'ssh' to remote host without the need for
+    a password."""
+
+TESTNAMES = [
+    'acregmin_attr',
+    'acregmax_attr',
+    'acdirmin_attr',
+    'acdirmax_attr',
+    'actimeo_attr',
+    'acregmin_data',
+    'acregmax_data',
+    'acdirmin_data',
+    'acdirmax_data',
+    'actimeo_data',
+]
+
+class CacheTest(TestUtil):
+    """CacheTest object
+
+       CacheTest() -> New test object
+
+       Usage:
+           x = CacheTest(testnames=['acregmin_attr', 'acregmax_attr', ...])
+
+           # Run all the tests
+           x.run_tests()
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        self.opts.set_defaults(filesize=32)
+        self.opts.add_option("--client", help="Remote NFS client that mounts server used for multiple client tests")
+        self.opts.add_option("--client-port", type="int", default=333, help="NFS server port for client to mount [default: value given in 'port' option]")
+        self.opts.add_option("--justbefore", type="int", default=2, help="Time in seconds to test a condition just before it is expected to come true [default: %default]")
+        self.opts.add_option("--acmin", default='10', help="Comma separated values to use for acregmin/acdirmin/actimeo [default: %default]")
+        self.opts.add_option("--acmax", default='20', help="Comma separated values to use for acregmax/acdirmax, first value of acmin will be used as acregmin/acdirmin [default: %default]")
+        self.scan_options()
+
+        if not self.client:
+            self.opts.error("client option is required")
+
+        if not self.client_port:
+            self.client_port = self.port
+
+        self.create_host(self.client)
+
+        # Process --acmin option
+        self.acminlist = self.str_list(self.acmin, int)
+        if self.acminlist is None:
+            self.opts.error("invalid value given --acmin=%s" % self.acmin)
+
+        # Process --acmax option
+        self.acmaxlist = self.str_list(self.acmax, int)
+        if self.acmaxlist is None:
+            self.opts.error("invalid value given --acmax=%s" % self.acmax)
+
+    def file_test(self, data_cache, fd, data, size, atime=0, inwire=False):
+        """Evaluate attribute/data caching test on a file.
+
+           data_cache:
+               Test data caching if true, otherwise test attribute caching
+           fd:
+               Opened file descriptor of file
+           data:
+               Expected data
+           size:
+               Expected file size
+           atime:
+               Time in seconds after the file is changed [default: 0]
+           inwire:
+               The data/attribute should go to the server if true.
+               [default: False(from cache)]
+
+           Return True if test passed.
+        """
+        if data_cache:
+            rdata = fd.read()
+            fd.seek(0)
+            cache_str = "Read file"
+            test_expr = rdata == data
+        else:
+            fstat = os.stat(self.absfile)
+            rdata = "size %d" % fstat.st_size
+            cache_str = "Get file size"
+            test_expr = fstat.st_size == size
+
+        inwire_str = "should go to server" if inwire else "still from cache"
+        self.dprint('DBG3', "%s at %f secs after change -- %s [%s]" % (cache_str, atime, inwire_str, rdata))
+        return test_expr
+
+    def do_file_test(self, acregmin=None, acregmax=None, actimeo=None, data_cache=False):
+        """Test attribute or data caching on a file.
+           Option actimeo and (acregmin[,acregmax]) are mutually exclusive.
+
+           acregmin:
+               Value of acregmin in seconds
+           acregmax:
+               Value of acregmax in seconds
+           actimeo:
+               Value of actimeo in seconds
+           data_cache:
+               Test data caching if true, otherwise test attribute caching
+        """
+        try:
+            self.trace_start()
+            fd = None
+            attr = 'data' if data_cache else 'attribute'
+            header = "Verify consistency of %s caching with %s on a file" % (attr, self.str_nfs())
+            # Mount options
+            mtopts = "hard,intr,rsize=4096,wsize=4096"
+            if actimeo:
+                header += " actimeo = %d" % actimeo
+                mtopts += ",actimeo=%d" % actimeo
+                acstr = "actimeo"
+            else:
+                if acregmin:
+                    header += " acregmin = %d" % acregmin
+                    mtopts += ",acregmin=%d" % acregmin
+                    acstr = "acregmin"
+                    actimeo = acregmin
+                if acregmax:
+                    header += " acregmax = %d" % acregmax
+                    mtopts += ",acregmax=%d" % acregmax
+                    acstr = "acregmax"
+                    actimeo = acregmax
+
+            self.test_group(header)
+
+            # Unmount server on local client
+            self.umount()
+
+            # Mount server on local client
+            self.mount(mtopts=mtopts)
+
+            # Create test file
+            self.get_filename()
+            data = 'ABCDE'
+            dlen = len(data)
+            self.dprint('DBG3', "Creating file [%s] %d@0" % (self.absfile, dlen))
+            fdw = open(self.absfile, "w")
+            fdw.write(data)
+            fdw.close()
+
+            if data_cache:
+                # Open file for reading
+                self.dprint('DBG3', "Open file - read into cache")
+                fd = open(self.absfile, "r")
+                # Read into cache
+                fd.read()
+                fd.seek(0)
+                cache_str = 'data'
+            else:
+                cache_str = 'size'
+
+            # Verify size of test file is 0
+            fstat = os.stat(self.absfile)
+            if fstat.st_size != dlen:
+                raise Exception("Size of newly created file is %d, should have been %d" %(fstat.st_size, dlen))
+
+            if acregmax:
+                # Stat the unchanging file until acregmax is hit
+                # each stat doubles the valid cache time
+                # start with acregmin
+                sleeptime = acregmin
+                while sleeptime <= acregmax:
+                    self.dprint('DBG3', "Sleeping for %f secs" % sleeptime)
+                    sleep(sleeptime)
+                    fstat = os.stat(self.absfile)
+                    if fstat.st_size != dlen:
+                        raise Exception("Size of file is %d, should have been %d" %(fstat.st_size, dlen))
+                    sleeptime = sleeptime + sleeptime
+
+            data1 = 'abcde'
+            dlen1 = len(data1)
+            stime = time()
+            self.dprint('DBG3', "Change file %s from remote client" % cache_str)
+            self.clientobj.run_cmd('echo -n %s >> %s' % (data1, self.absfile))
+
+            # Still from cache so no change
+            test_expr = self.file_test(data_cache, fd, data, dlen)
+            self.test(test_expr, "File %s should have not changed at t=0" % cache_str)
+
+            # Compensate for time delays to make sure file stat is done
+            # at (acregmin|acregmax|actimeo - justbefore)
+            dtime = time() - stime
+            sleeptime = actimeo - self.justbefore - dtime
+            # XXX FIXME check sleeptime for negative values
+
+            # Sleep to just before acregmin/acregmax/actimeo
+            self.dprint('DBG3', "Sleeping for %f secs, just before %s" % (sleeptime, acstr))
+            sleep(sleeptime)
+
+            # Still from cache so no change
+            test_expr = self.file_test(data_cache, fd, data, dlen, atime=(time()-stime))
+            self.test(test_expr, "File %s should have not changed just before %s" % (cache_str, acstr))
+
+            # Sleep just past acregmin/acregmax/actimeo
+            self.dprint('DBG3', "Sleeping for %f secs, just past %s" % (self.justbefore, acstr))
+            sleep(self.justbefore)
+
+            # Should go to server
+            test_expr = self.file_test(data_cache, fd, data+data1, dlen+dlen1, atime=(time()-stime), inwire=True)
+            self.test(test_expr, "File %s should have changed just after %s" % (cache_str, acstr))
+
+            if acregmax:
+                stime = time()
+                self.dprint('DBG3', "Change file %s again from remote client -- cache timeout should be back to acregmin" % cache_str)
+                self.clientobj.run_cmd('echo -n %s >> %s' % (data, self.absfile))
+
+                # Cache timeout should be back to acregmin
+                # Wait until just before acregmin
+                dtime = time() - stime
+                sleeptime = acregmin - self.justbefore - dtime
+                self.dprint('DBG3', "Sleeping for %f secs, just before acregmin" % int(sleeptime))
+                sleep(sleeptime)
+
+                # Still from cache so no change
+                test_expr = self.file_test(data_cache, fd, data+data1, dlen+dlen1, atime=(time()-stime))
+                self.test(test_expr, "File %s should have not changed just before acregmin" % cache_str)
+
+                # Go just past acregmin
+                self.dprint('DBG3', "Sleeping for %f secs, just past acregmin" % self.justbefore)
+                sleep(self.justbefore)
+
+                # Should go to server
+                test_expr = self.file_test(data_cache, fd, data+data1+data, 2*dlen+dlen1, atime=(time()-stime), inwire=True)
+                self.test(test_expr, "File %s should have changed just after acregmin" % cache_str)
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                fd.close()
+            self.trace_stop()
+
+    def dir_test(self, data_cache, dirlist, nlink, atime=0, inwire=False):
+        """Evaluate attribute/data caching test on a directory.
+
+           data_cache:
+               Test data caching if true, otherwise test attribute caching
+           dirlist:
+               Expected directory data
+           nlink:
+               Expected number of hard links in directory
+           atime:
+               Time in seconds after the directory is changed [default: 0]
+           inwire:
+               The data/attribute should go to the server if true.
+               [default: False(from cache)]
+
+           Return True if test passed.
+        """
+        if data_cache:
+            rdata = os.listdir(self.testdir)
+            cache_str = "directory listing"
+            test_expr = rdata == dirlist
+        else:
+            fstat = os.stat(self.testdir)
+            rdata = "[nlink %d]" % fstat.st_nlink
+            cache_str = "hard link count"
+            test_expr = fstat.st_nlink == nlink
+
+        inwire_str = "should go to server" if inwire else "still from cache"
+        self.dprint('DBG3', "Get %s at %f secs after change -- %s %s" % (cache_str, atime, inwire_str, rdata))
+        return test_expr
+
+    def do_dir_test(self, acdirmin=None, acdirmax=None, actimeo=None, data_cache=False):
+        """Test attribute or data caching on a directory.
+           Option actimeo and (acdirmin[,acdirmax]) are mutually exclusive.
+
+           acdirmin:
+               Value of acdirmin in seconds
+           acdirmax:
+               Value of acdirmax in seconds
+           actimeo:
+               Value of actimeo in seconds
+           data_cache:
+               Test data caching if true, otherwise test attribute caching
+        """
+        try:
+            attr = 'data' if data_cache else 'attribute'
+            header = "Verify consistency of %s caching with %s on a directory" % (attr, self.str_nfs())
+            # Mount options
+            mtopts = "hard,intr,rsize=4096,wsize=4096"
+            if actimeo:
+                header += " actimeo = %d" % actimeo
+                mtopts += ",actimeo=%d" % actimeo
+                acstr = "actimeo"
+            else:
+                if acdirmin:
+                    header += " acdirmin = %d" % acdirmin
+                    mtopts += ",acdirmin=%d" % acdirmin
+                    acstr = "acdirmin"
+                    actimeo = acdirmin
+                if acdirmax:
+                    header += " acdirmax = %d" % acdirmax
+                    mtopts += ",acdirmax=%d" % acdirmax
+                    acstr = "acdirmax"
+                    actimeo = acdirmax
+
+            self.test_group(header)
+
+            # Unmount server on local client
+            self.umount()
+
+            # Mount server on local client
+            self.mount(mtopts=mtopts)
+
+            # Get a unique directory name
+            dirname = self.get_dirname()
+            self.testdir = self.absdir
+            self.dprint('DBG3', "Creating directory [%s]" % self.testdir)
+            os.mkdir(self.testdir, 0777)
+
+            self.get_dirname(dir=dirname)
+            self.dprint('DBG3', "Creating directory [%s]" % self.absdir)
+            os.mkdir(self.absdir, 0777)
+
+            if data_cache:
+                cache_str = "directory listing"
+            else:
+                cache_str = "hard link count"
+
+            # Get number of hard links on newly created directory
+            fstat = os.stat(self.testdir)
+            nlink = fstat.st_nlink
+            # Get list of directories on newly created directory
+            dirlist = os.listdir(self.testdir)
+
+            if acdirmax:
+                # Stat the unchanging directory
+                # each ls doubles the valid cache time
+                # start with acdirmin
+                sleeptime = acdirmin
+                while sleeptime <= acdirmax:
+                    self.dprint('DBG3', "Sleeping for %f secs" % sleeptime)
+                    sleep(sleeptime)
+                    fstat = os.stat(self.testdir)
+                    if fstat.st_nlink != nlink:
+                        raise Exception("Hard link count of directory is %d, should have been %d" %(fstat.st_nlink, nlink))
+                    sleeptime = sleeptime + sleeptime
+
+            # Increase the hard link count by creating a sub-directory
+            stime = time()
+            dirname2 = self.get_dirname(dir=dirname)
+            self.dprint('DBG3', "Creating directory [%s] from remote client" % self.absdir)
+            self.clientobj.run_cmd('mkdir ' + self.absdir)
+
+            # Still from cache so no change
+            test_expr = self.dir_test(data_cache, dirlist, nlink)
+            self.test(test_expr, "%s should have not changed at t=0" % cache_str.capitalize())
+
+            # Compensate for time delays to make sure directory stat is done
+            # at (acdirmin|acdirmax|actimeo - justbefore)
+            dtime = time() - stime
+            sleeptime = actimeo - self.justbefore - dtime
+
+            # Sleep to just before acdirmin/acdirmax/actimeo
+            self.dprint('DBG3', "Sleeping for %f secs, just before %s" % (int(sleeptime), acstr))
+            sleep(sleeptime)
+
+            # Still from cache so no change
+            test_expr = self.dir_test(data_cache, dirlist, nlink, atime=(time()-stime))
+            self.test(test_expr, "%s should have not changed just before %s" % (cache_str.capitalize(), acstr))
+
+            # Sleep just past acdirmin/acdirmax/actimeo
+            self.dprint('DBG3', "Sleeping for %f secs, just past %s" % (self.justbefore, acstr))
+            sleep(self.justbefore)
+
+            # Should go to server
+            dirlist.append(dirname2)
+            test_expr = self.dir_test(data_cache, dirlist, nlink+1, atime=(time()-stime), inwire=True)
+            self.test(test_expr, "%s should have changed just after %s" % (cache_str.capitalize(), acstr))
+            nlink += 1
+
+            if acdirmax:
+                # Increase the hard link count by creating another sub-directory
+                stime = time()
+                dirname3 = self.get_dirname(dir=dirname)
+                self.dprint('DBG3', "Creating directory [%s] from remote client" % self.absdir)
+                self.clientobj.run_cmd('mkdir ' + self.absdir)
+
+                # Cache timeout should be back to acdirmin
+                # Wait until just before acdirmin
+                dtime = time() - stime
+                sleeptime = acdirmin - self.justbefore - dtime
+                self.dprint('DBG3', "Sleeping for %f secs, just before acdirmin" % int(sleeptime))
+                sleep(sleeptime)
+
+                # Still from cache so no change
+                test_expr = self.dir_test(data_cache, dirlist, nlink, atime=(time()-stime))
+                self.test(test_expr, "%s should have not changed just before acdirmin" % cache_str.capitalize())
+
+                # Go just past acdirmin
+                self.dprint('DBG3', "Sleeping for %f secs, just past acdirmin" % self.justbefore)
+                sleep(self.justbefore)
+
+                # Should go to server
+                dirlist.append(dirname3)
+                test_expr = self.dir_test(data_cache, dirlist, nlink+1, atime=(time()-stime), inwire=True)
+                self.test(test_expr, "%s should have changed just after acdirmin" % cache_str.capitalize())
+        except Exception as e:
+            self.test(False, traceback.format_exc())
+
+    def acregmin_attr_test(self):
+        """Verify consistency of attribute caching by varying the
+           acregmin NFS option.
+
+           The cached information is assumed to be valid for attrtimeo
+           which starts at acregmin.
+        """
+        for acregmin in self.acminlist:
+            self.do_file_test(acregmin=acregmin)
+
+    def acregmax_attr_test(self):
+        """Verify consistency of attribute caching by varying the
+           acregmax NFS option.
+
+           The cached information is assumed to be valid for attrtimeo which
+           starts at acregmin. An attribute revalidation to the server
+           that shows no attribute change doubles attrtimeo up to acregmax.
+           An attribute revalidation to the server that shows a change has
+           occurred resets it to acregmin.
+        """
+        acregmin = self.acminlist[0]
+        for acregmax in self.acmaxlist:
+            self.do_file_test(acregmin=acregmin, acregmax=acregmax)
+
+    def acdirmin_attr_test(self):
+        """Verify consistency of attribute caching by varying the
+           acdirmin NFS option.
+
+           The cached information is assumed to be valid for attrtimeo
+           which starts at acdirmin. Test that this is so.
+        """
+        for acdirmin in self.acminlist:
+            self.do_dir_test(acdirmin=acdirmin)
+
+    def acdirmax_attr_test(self):
+        """Verify consistency of attribute caching by varying the
+           acdirmax NFS option.
+
+           The cached information is assumed to be valid for attrtimeo which
+           starts at acdirmin. An attribute revalidation to the server
+           that shows no attribute change doubles attrtimeo up to acdirmax.
+           An attribute revalidation to the server that shows a change has
+           occurred resets it to acdirmin.
+        """
+        acdirmin = self.acminlist[0]
+        for acdirmax in self.acmaxlist:
+            self.do_dir_test(acdirmin=acdirmin, acdirmax=acdirmax)
+
+    def actimeo_attr_test(self):
+        """Verify consistency of attribute caching by varying the
+           actimeo NFS option.
+
+           The cached information is assumed to be valid for attrtimeo
+           which starts and ends at actimeo.
+        """
+        for actimeo in self.acminlist:
+            # File test
+            self.do_file_test(actimeo=actimeo)
+
+            # Directory test
+            self.do_dir_test(actimeo=actimeo)
+
+    def acregmin_data_test(self):
+        """Verify consistency of data caching by varying the
+           acregmin NFS option.
+        """
+        for acregmin in self.acminlist:
+            self.do_file_test(acregmin=acregmin, data_cache=True)
+
+    def acregmax_data_test(self):
+        """Verify consistency of data caching by varying the
+           acregmax NFS option.
+
+           The cached information is assumed to be valid for attrtimeo which
+           starts at acregmin. An attribute revalidation to the server
+           that shows no attribute change doubles attrtimeo up to acregmax.
+           An attribute revalidation to the server that shows a change has
+           occurred resets it to acregmin.
+        """
+        acregmin = self.acminlist[0]
+        for acregmax in self.acmaxlist:
+            self.do_file_test(acregmin=acregmin, acregmax=acregmax, data_cache=True)
+
+    def acdirmin_data_test(self):
+        """Verify consistency of data caching by varying the
+           acdirmin NFS option.
+
+           The cached information is assumed to be valid for attrtimeo
+           which starts at acdirmin. Test that this is so.
+        """
+        for acdirmin in self.acminlist:
+            self.do_dir_test(acdirmin=acdirmin, data_cache=True)
+
+    def acdirmax_data_test(self):
+        """Verify consistency of data caching by varying the
+           acdirmax NFS option.
+
+           The cached information is assumed to be valid for attrtimeo which
+           starts at acdirmin. An attribute revalidation to the server
+           that shows no attribute change doubles attrtimeo up to acdirmax.
+           An attribute revalidation to the server that shows a change has
+           occurred resets it to acdirmin.
+        """
+        acdirmin = self.acminlist[0]
+        for acdirmax in self.acmaxlist:
+            self.do_dir_test(acdirmin=acdirmin, acdirmax=acdirmax, data_cache=True)
+
+    def actimeo_data_test(self):
+        """Verify consistency of data caching by varying the
+           actimeo NFS option.
+
+           The cached information is assumed to be valid for attrtimeo
+           which starts and ends at actimeo.
+        """
+        for actimeo in self.acminlist:
+            # File test
+            self.do_file_test(actimeo=actimeo, data_cache=True)
+
+            # Directory test
+            self.do_dir_test(actimeo=actimeo, data_cache=True)
+
+################################################################################
+#  Entry point
+x = CacheTest(usage=USAGE, testnames=TESTNAMES)
+
+try:
+    # Unmount server on remote client
+    x.clientobj.umount()
+
+    # Mount server on remote client
+    x.clientobj.mount()
+
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    # Unmount server on remote client
+    x.clientobj.umount()
+    x.exit()

@@ -1,0 +1,1546 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2012 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import stat
+import fcntl
+import posix
+import ctypes
+import random
+import itertools
+import traceback
+import nfstest_config as c
+from nfstest.test_util import TestUtil
+from time import sleep
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2012 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> [options]
+
+POSIX file system level access tests
+====================================
+Verify POSIX file system level access over the specified path using
+positive and negative testing.
+
+Valid for any version of NFS.
+
+Examples:
+    The only required option is --server
+    $ %prog --server 192.168.0.11
+
+Notes:
+    The user id in the local host must have access to run commands as root
+    using the 'sudo' command without the need for a password."""
+
+TESTNAMES = [
+    'access',
+    'chdir',
+    'creat',
+    'fcntl',
+    'fdatasync',
+    'fstat',
+    'fstatvfs',
+    'fsync',
+    'link',
+    'lseek',
+    'lstat',
+    'mkdir',
+    'opendir',
+    'read',
+    'readdir',
+    'readlink',
+    'rename',
+    'rewinddir',
+    'rmdir',
+    'seekdir',
+    'stat',
+    'statvfs',
+    'symlink',
+    'sync',
+    'telldir',
+    'unlink',
+    'write',
+    'open',
+    'chmod',
+    'closedir',
+    'close',
+    #'mmap',
+    #'munmap',
+]
+
+stat_map = {
+    1: 'stat',
+    2: 'lstat',
+    3: 'fstat',
+}
+
+access_names = {
+    posix.F_OK: 'F_OK',
+    posix.R_OK: 'R_OK',
+    posix.W_OK: 'W_OK',
+    posix.X_OK: 'X_OK',
+}
+
+def access_str(mode):
+    """Convert the access mode bitmap to its string representation."""
+    list = []
+    for perm in access_names:
+        if perm & mode != 0:
+            list.append(access_names[perm])
+    if len(list) == 0:
+        list.append(access_names[0])
+    return '|'.join(list)
+
+class DirEnt(ctypes.Structure):
+    """
+       struct dirent {
+           ino_t          d_ino;       /* inode number */
+           off_t          d_off;       /* offset to the next dirent */
+           unsigned short d_reclen;    /* length of this record */
+           unsigned char  d_type;      /* type of file; not supported
+                                          by all file system types */
+           char           d_name[256]; /* filename */
+       };
+    """
+    _fields_ = [
+        ("d_ino",    ctypes.c_ulong),
+        ("d_off",    ctypes.c_ulong),
+        ("d_reclen", ctypes.c_ushort),
+        ("d_type",   ctypes.c_char),
+        ("d_name",   ctypes.c_char*256),
+    ]
+
+class Flock(ctypes.Structure):
+    """
+       struct flock {
+           short l_type;    /* Type of lock: F_RDLCK,
+                               F_WRLCK, F_UNLCK */
+           short l_whence;  /* How to interpret l_start:
+                               SEEK_SET, SEEK_CUR, SEEK_END */
+           off_t l_start;   /* Starting offset for lock */
+           off_t l_len;     /* Number of bytes to lock */
+           pid_t l_pid;     /* PID of process blocking our lock
+                               (F_GETLK only) */
+
+       };
+    """
+    _fields_ = [
+        ("l_type",   ctypes.c_short),
+        ("l_whence", ctypes.c_short),
+        ("l_start",  ctypes.c_ulong),
+        ("l_len",    ctypes.c_ulong),
+        ("l_pid",    ctypes.c_int),
+    ]
+
+# OPEN flags
+access_flag_list = [
+    posix.O_RDONLY,
+    posix.O_WRONLY,
+    posix.O_RDWR,
+]
+open_flag_list = [
+    posix.O_RDONLY,
+    posix.O_WRONLY,
+    posix.O_RDWR,
+    posix.O_CREAT,
+    posix.O_EXCL,
+    posix.O_NOCTTY,
+    posix.O_TRUNC,
+    posix.O_APPEND,
+    posix.O_ASYNC,
+    # Linux-specific flags
+    posix.O_DIRECTORY,
+    posix.O_NOATIME,
+    posix.O_NOFOLLOW,
+]
+open_flag_map = {
+    posix.O_RDONLY:    'O_RDONLY',
+    posix.O_WRONLY:    'O_WRONLY',
+    posix.O_RDWR:      'O_RDWR',
+    posix.O_CREAT:     'O_CREAT',
+    posix.O_EXCL:      'O_EXCL',
+    posix.O_NOCTTY:    'O_NOCTTY',
+    posix.O_TRUNC:     'O_TRUNC',
+    posix.O_APPEND:    'O_APPEND',
+    posix.O_ASYNC:     'O_ASYNC',
+    # Linux-specific flags
+    posix.O_DIRECTORY: 'O_DIRECTORY',
+    posix.O_NOATIME:   'O_NOATIME',
+    posix.O_NOFOLLOW:  'O_NOFOLLOW',
+}
+
+perm_map = {
+    00001: 'XOTH',
+    00002: 'WOTH',
+    00004: 'ROTH',
+    00010: 'XGRP',
+    00020: 'WGRP',
+    00040: 'RGRP',
+    00100: 'XUSR',
+    00200: 'WUSR',
+    00400: 'RUSR',
+    01000: 'SVTX',
+    02000: 'SGID',
+    04000: 'SUID',
+}
+
+def oflag_str(flags):
+    """Convert the open flags bitmap to its string representation."""
+    flist = []
+    flag_list = list(flags)
+    if 0 in access_flag_list:
+        # Flag with no bits set is in the access list
+        found = False
+        for flag in access_flag_list:
+            if flag in flags:
+                # At least one access flag is in flags
+                found = True
+                break
+        if not found:
+            flag_list = [0] + flag_list
+    for flag in flag_list:
+        flist.append(open_flag_map[flag])
+    return '|'.join(flist)
+
+class PosixTest(TestUtil):
+    """PosixTest object
+
+       PosixTest() -> New test object
+
+       Usage:
+           x = PosixTest(testnames=['access', 'chdir', 'creat', ...])
+
+           # Run all the tests
+           x.run_tests()
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        self.scan_options()
+
+        # Load share library - used for POSIX functions not implemented
+        # in the posix module
+        self.libc = ctypes.CDLL('libc.so.6')
+
+        # Make sure actimeo is set
+        if 'actimeo' not in self.mtopts:
+            self.mtopts += ",actimeo=0"
+
+        # Clear umask
+        os.umask(0)
+
+    def access(self, path, mode, test, msg=""):
+        """Test file access.
+
+           path:
+               File system object to get access from
+           mode:
+               Mode access to check
+           test:
+               Expected output from access()
+           msg:
+               Message to be appended to test message
+        """
+        not_str = "" if test else "not "
+        out = posix.access(path, mode)
+        self.test(out == test, "access - file access %sallowed with mode %s%s" % (not_str, access_str(mode), msg))
+
+    def access_test(self):
+        """Verify POSIX API access() on files with different modes."""
+        self.test_group("Verify POSIX API access() on %s" % self.str_nfs())
+        perms = [0777, 0666, 0555, 0333, 0444, 0222, 0111, 000]
+        cperms = [07, 06, 05, 03]
+
+        self.create_file()
+        self.access(self.absfile, posix.F_OK, True)
+        self.access(self.absfile+'bogus', posix.F_OK, False, " for a non-existent file")
+        for perm in perms:
+            msg = " for file with permissions %s" % oct(perm)
+            os.chmod(self.absfile, perm)
+            self.access(self.absfile, posix.R_OK, (perm&4)!=0, msg)
+            self.access(self.absfile, posix.W_OK, (perm&2)!=0, msg)
+            self.access(self.absfile, posix.X_OK, (perm&1)!=0, msg)
+            for mode in cperms:
+                self.access(self.absfile, mode, mode&perm == mode, msg)
+
+    def chdir_test(self):
+        """Verify POSIX API chdir() by changing to a newly created directory
+           and then by changing back to the original directory.
+        """
+        self.test_group("Verify POSIX API chdir() on %s" % self.str_nfs())
+
+        cwd_orig = os.getcwd()
+        self.create_dir()
+        self.dprint('DBG3', "Change to directory %s using POSIX API chdir()" % self.absdir)
+        posix.chdir(self.absdir)
+        cwd = os.getcwd()
+        self.test(cwd == self.absdir, "chdir - current working directory should be changed")
+        posix.chdir(cwd_orig)
+        cwd = os.getcwd()
+        self.test(cwd == cwd_orig, "chdir - current working directory should be changed back to the original directory")
+
+        try:
+            posix.chdir(cwd_orig+'bogus')
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 2, "chdir - changing to a non-existent directory should return an error")
+
+    def chmod_test(self):
+        """Verify POSIX API chmod() on a file and directory by trying all valid
+           combinations of modes. Verify that the st_ctime files is updated
+           for both the file and directory.
+        """
+        self.test_group("Verify POSIX API chmod() on %s" % self.str_nfs())
+
+        for objtype in ['file', 'directory']:
+            if objtype == 'file':
+                self.create_file()
+            else:
+                self.create_dir()
+                self.absfile = self.absdir
+            chmod_count = 0
+            max_perm = 07777+1
+            bad_dict = {}
+            bit_list = []
+            for perm in xrange(max_perm):
+                bit_list.append(perm)
+                posix.chmod(self.absfile, perm)
+                fstat = os.stat(self.absfile)
+                mode = fstat.st_mode & 07777
+                if mode == perm:
+                    chmod_count += 1
+                if self.tverbose != 1:
+                    self.test(mode == perm, "chmod - changing %s permission mode to %05o should succeed" % (objtype, perm), failmsg=", got %05o from stat()" % mode)
+                if mode != perm:
+                    item = perm^mode
+                    if bad_dict.get(item) is None:
+                        bad_dict[item] = 0
+                    bad_dict[item] += 1
+            for item in bad_dict:
+                out = self.bitmap_str(item, bad_dict[item], perm_map, bit_list)
+                if out is None:
+                    out = "%05o" % item
+                self.test(False, "chmod - %d %s permission mode changes failed when setting (%s)" % (bad_dict[item], objtype, out))
+
+            if chmod_count == max_perm:
+                msg = "chmod - %d %s permission mode changes succeeded" % (chmod_count, objtype)
+                if self.tverbose == 1:
+                    self.test(True, msg)
+                else:
+                    self.test_info(">>>>: " + msg)
+            fstat_b = os.stat(self.absfile)
+            sleep(1)
+            posix.chmod(self.absfile, 0777)
+            fstat = os.stat(self.absfile)
+            self.test(fstat.st_ctime > fstat_b.st_ctime, "chmod - %s st_ctime should be updated" % objtype)
+
+    def close_test(self):
+        """Verify POSIX API close() works and that writing to a closed file
+           descriptor returns an error.
+        """
+        self.test_group("Verify POSIX API close() on %s" % self.str_nfs())
+
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT)
+        posix.close(fd)
+        self.test(True, "close - close() on write file should succeed")
+        try:
+            count = posix.write(fd, self.data_pattern(0, self.filesize))
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 9, "close - write after close should return an error")
+
+        self.dprint('DBG3', "Open file %s for reading" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_RDONLY)
+        posix.close(fd)
+        self.test(True, "close - close() on read file should succeed")
+
+        return # XXX The next test hangs
+        try:
+            posix.read(fd, 10)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 9, "close - read after close should return an error")
+
+    def closedir_test(self):
+        """Verify POSIX API closedir() works and that reading to a closed file
+           descriptor returns an error.
+        """
+        self.test_group("Verify POSIX API closedir() on %s" % self.str_nfs())
+
+        self.create_dir()
+
+        fd = self.libc.opendir(self.absdir)
+        out = self.libc.closedir(fd)
+        self.test(out == 0, "closedir - closedir() should succeed")
+
+        return # XXX The next test hangs
+        dirent = self.libc.readdir(fd)
+        self.test(dirent == 0, "closedir - readdir after closedir should return an error")
+
+    def creat_test(self):
+        """Verify POSIX API creat(path, mode) is equivalent to
+           open(path, O_WRONLY|O_CREAT|O_TRUNC, mode). First test with a path
+           that does not exist to verify the file was created and then test
+           with a path that does exist to verify that the file is truncated.
+        """
+        self.test_group("Verify POSIX API creat() on %s" % self.str_nfs())
+
+        mode = 0754
+        self.get_filename()
+        self.dprint('DBG3', "Create file %s using POSIX API creat()" % self.absfile)
+        fd = self.libc.creat(self.absfile, mode)
+        count = posix.write(fd, self.data_pattern(0, self.filesize))
+        posix.close(fd)
+        self.test(os.path.exists(self.absfile), "creat - creation of file should succeed")
+        fstat = os.stat(self.absfile)
+        self.test(fstat.st_mode & 0777 == mode, "creat - mode permissions of created file should be correct")
+        self.test(fstat.st_size == count, "creat - file size should be correct")
+
+        self.dprint('DBG3', "Open existing file %s using POSIX API creat()" % self.absfile)
+        fd = self.libc.creat(self.absfile, 0744)
+        posix.close(fd)
+        fstat = os.stat(self.absfile)
+        self.test(os.path.exists(self.absfile), "creat - existent file open should succeed")
+        self.test(fstat.st_mode & 0777 == mode, "creat - mode permissions of opened file should not be changed")
+        self.test(fstat.st_size == 0, "creat - existent file should be truncated")
+
+    def _do_io(self, fd, dmsg):
+        """Wrapper to do I/O."""
+        self.dprint('DBG3', dmsg)
+        if self.posix_read:
+            self.posix_data += posix.read(fd, self.posix_iosize)
+        else:
+            self.posix_offset += posix.write(fd, self.data_pattern(self.posix_offset, self.posix_iosize))
+
+    def _fcntl_test(self, objtype):
+        """Verify the POSIX API fcntl() commands F_DUPFD, F_GETFD, F_SETFD,
+           F_GETFL, F_SETFL, and FD_CLOEXEC. The F_DUPFD command is tested
+           by performing operations on the original and dupped file descriptor
+           to ensure they behave correctly. The F_GETFD and F_SETFD commands
+           are tested by setting the FD_CLOEXEC flag and making sure it gets set.
+           The F_GETFL and F_SETFL commands are tested by setting the O_APPEND
+           flag and making sure it gets set.
+        """
+        if objtype == 'read':
+            str_ing = 'reading'
+            str_ed = 'read'
+            str_lck = 'F_RDLCK'
+            mode = posix.O_RDONLY
+            lock_type = fcntl.F_RDLCK
+            self.posix_read = True
+            self.absfile = self.abspath(self.files[0])
+        else:
+            str_ing = 'writing'
+            str_ed = 'written'
+            str_lck = 'F_WRLCK'
+            mode = posix.O_WRONLY|posix.O_CREAT
+            lock_type = fcntl.F_WRLCK
+            self.posix_read = False
+            self.get_filename()
+
+        self.dprint('DBG3', "Open file %s for %s" % (self.absfile, str_ing))
+        fd = posix.open(self.absfile, mode)
+        self.posix_offset = 0
+        self.posix_data = ''
+        self.posix_iosize = 32
+        test_pos = 32
+        nfd = 1000
+
+        self._do_io(fd, "%s file" % objtype.capitalize())
+
+        self.dprint('DBG3', "DUP file descriptor using POSIX API fcntl(fd, F_DUPFD, n)")
+        self.libc.fcntl.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        self.libc.fcntl.restype = ctypes.c_int
+        fd2 = self.libc.fcntl(fd, fcntl.F_DUPFD, nfd)
+        self.test(fd2 >= nfd, "fcntl - DUP'ed file descriptor should be greater than or equal to the value given")
+
+        fdflags = self.libc.fcntl(fd, fcntl.F_GETFD, 0)
+        self.test(fdflags >= 0, "fcntl - F_GETFD should succeed")
+        out = self.libc.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+        self.test(out != -1, "fcntl - F_SETFD should succeed")
+        fdflags = self.libc.fcntl(fd, fcntl.F_GETFD, 0)
+        self.test(fdflags & fcntl.FD_CLOEXEC == fcntl.FD_CLOEXEC, "fcntl - F_SETFD should set the given file descriptor flag correctly")
+
+        flflags = self.libc.fcntl(fd, fcntl.F_GETFL, 0)
+        self.test(flflags >= 0, "fcntl - F_GETFL should succeed")
+        out = self.libc.fcntl(fd, fcntl.F_SETFL, os.O_APPEND)
+        self.test(out != -1, "fcntl - F_SETFL should succeed")
+        flflags = self.libc.fcntl(fd, fcntl.F_GETFL, 0)
+        self.test(flflags & os.O_APPEND == os.O_APPEND, "fcntl - F_SETFL should set the given file status flag correctly")
+
+        flags = self.libc.fcntl(fd2, fcntl.F_GETFD, 0)
+        self.test(flags != fdflags, "fcnlt - F_SETFD should change the flag for the given file descriptor only")
+        flags = self.libc.fcntl(fd2, fcntl.F_GETFL, 0)
+        self.test(flags == flflags, "fcnlt - F_SETFL should change the flag for all file descriptors on the same file")
+
+        for i in xrange(10):
+            self._do_io(fd2, "%s file using DUP'ed file descriptor" % objtype.capitalize())
+
+        self._do_io(fd, "%s file using original file descriptor" % objtype.capitalize())
+
+        if objtype == 'read':
+            test_expr = self.posix_data == self.data_pattern(0, len(self.posix_data))
+        else:
+            fdr = open(self.absfile, "r")
+            data = fdr.read()
+            fdr.close()
+            test_expr = data == self.data_pattern(0, self.posix_offset)
+        self.test(test_expr, "fcntl - %s data on both file descriptors should be correct" % str_ed)
+
+        self.dprint('DBG3', "Reposition file pointer using DUP'ed file descriptor")
+        posix.lseek(fd2, test_pos, os.SEEK_SET)
+        pos = posix.lseek(fd, 0, os.SEEK_CUR)
+        self.posix_offset = pos
+        self.posix_data = ""
+        self._do_io(fd, "%s file using original file descriptor" % objtype.capitalize())
+        self.test(pos == test_pos, "fcntl - repositioning file pointer using DUP'ed file descriptor should reposition it in the original file descriptor as well")
+        posix.close(fd)
+
+        try:
+            self._do_io(fd, "%s file using original file descriptor" % objtype.capitalize())
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 9, "fcntl - %s after closing original file descriptor should return an error" % objtype)
+
+        flock = Flock(lock_type, 0, 0, int(self.filesize/2), 0)
+        self.libc.fcntl.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(Flock)]
+        self.libc.fcntl.restype = ctypes.c_int
+        out = self.libc.fcntl(fd2, fcntl.F_SETLKW, ctypes.byref(flock))
+        self.test(out != -1, "fcntl - F_SETLKW (%s) should succeed" % str_lck)
+
+        pos = posix.lseek(fd2, 0, os.SEEK_CUR)
+        self.posix_offset = pos
+        self.posix_data = ""
+        self._do_io(fd2, "%s file using DUP'ed file descriptor" % objtype.capitalize())
+        test_expr = self.posix_data == self.data_pattern(pos, len(self.posix_data))
+        self.test(test_expr, "fcntl - %s on DUP'ed descriptor after closing original file descriptor should succeed" % objtype)
+
+        flock = Flock(fcntl.F_UNLCK, 0, 0, int(self.filesize/4), 0)
+        out = self.libc.fcntl(fd2, fcntl.F_SETLKW, ctypes.byref(flock))
+        self.test(out != -1, "fcntl - F_SETLKW (F_UNLCK) should succeed")
+
+        flock = Flock(lock_type, 0, int(self.filesize/2), self.filesize, 0)
+        out = self.libc.fcntl(fd2, fcntl.F_SETLK, ctypes.byref(flock))
+        self.test(out != -1, "fcntl - F_SETLK (%s) should succeed" % str_lck)
+
+        self._do_io(fd2, "%s file using DUP'ed file descriptor" % objtype.capitalize())
+
+        flock = Flock(fcntl.F_UNLCK, 0, int(self.filesize/2), int(self.filesize/4), 0)
+        out = self.libc.fcntl(fd2, fcntl.F_SETLK, ctypes.byref(flock))
+        self.test(out != -1, "fcntl - F_SETLK (F_UNLCK) should succeed")
+
+        posix.close(fd2)
+
+    def fcntl_test(self):
+        """Verify the POSIX API fcntl() commands F_DUPFD, F_GETFD, F_SETFD,
+           F_GETFL, F_SETFL, and FD_CLOEXEC. The F_DUPFD command is tested
+           by performing operations on the original and dupped file descriptor
+           to ensure they behave correctly. The F_GETFD and F_SETFD commands
+           are tested by setting the FD_CLOEXEC flag and making sure it gets set.
+           The F_GETFL and F_SETFL commands are tested by setting the O_APPEND
+           flag and making sure it gets set.
+           Run the test for both 'read' and 'write'.
+        """
+        self.test_group("Verify POSIX API fcntl() on %s" % self.str_nfs())
+
+        self._fcntl_test('read')
+        self._fcntl_test('write')
+
+    def fdatasync_test(self):
+        """Verify POSIX API fdatasync()."""
+        self._sync('fdatasync')
+
+    def fstat_test(self):
+        """Verify POSIX API fstat() by checking the mode on a file and that
+           it returns the expected structure members. Create a symlink and
+           verify that fstat returns information about the link.
+        """
+        self._stat_test(stat_mode=3)
+
+    def _statvfs_test(self, path=None, fd=None, objtype='file'):
+        """Verify POSIX API statvfs() or fstatvfs() by making sure
+           all the members of the structure are returned.
+           Options path and fd are mutually exclusive.
+
+           path:
+               Verify statvfs()
+           fd:
+               Verify fstatvfs()
+           objtype:
+               Object type 'file' or 'directory' [default: 'file']
+        """
+        if path != None:
+            op_str = 'statvfs'
+            self.dprint('DBG3', "statvfs %s [%s]" % (objtype, path))
+            stv = posix.statvfs(path)
+        elif fd != None:
+            op_str = 'fstatvfs'
+            self.dprint('DBG3', "fstatvfs %s (%d)" % (objtype, fd))
+            stv = posix.fstatvfs(fd)
+
+        self.test(stv.f_bsize != None,   "%s - f_bsize should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_frsize != None,  "%s - f_frsize should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_blocks != None,  "%s - f_blocks should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_bfree != None,   "%s - f_bfree should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_bavail != None,  "%s - f_bavail should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_files != None,   "%s - f_files should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_ffree != None,   "%s - f_ffree should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_favail != None,  "%s - f_favail should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_flag != None,    "%s - f_flag should be returned for %s" % (op_str, objtype))
+        self.test(stv.f_namemax != None, "%s - f_namemax should be returned for %s" % (op_str, objtype))
+
+    def fstatvfs_test(self):
+        """Verify POSIX API fstatvfs() by making sure all the members of the
+           structure are returned.
+        """
+        self.test_group("Verify POSIX API fstatvfs() on %s" % self.str_nfs())
+
+        self.create_file()
+        self.dprint('DBG3', "Open file %s for reading" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_RDONLY)
+        self._statvfs_test(fd=fd)
+        posix.close(fd)
+
+        self.create_dir()
+        self.dprint('DBG3', "Open directory %s" % self.absdir)
+        fd = posix.open(self.absdir, posix.O_RDONLY|posix.O_NONBLOCK|posix.O_DIRECTORY)
+        self._statvfs_test(fd=fd, objtype='directory')
+        posix.close(fd)
+
+    def fsync_test(self):
+        """Verify POSIX API fsync()."""
+        self._sync('fsync')
+
+    def link_test(self):
+        """Verify POSIX API link(src, dst) creates a link and updates
+           st_ctime field for the file. Verify that link updates the
+           st_ctime and st_mtime for the directory. Verify st_link count
+           incremented by 1 for the file.
+        """
+        self.test_group("Verify POSIX API link() on %s" % self.str_nfs())
+
+        # Get info of source file
+        srcfile = self.abspath(self.files[0])
+        fstat_b = os.stat(srcfile)
+        dstat_b = os.stat(self.mtdir)
+        sleep(1)
+
+        self.get_filename()
+        self.dprint('DBG3', "Create link %s -> %s using POSIX API link()" % (self.absfile, srcfile))
+        posix.link(srcfile, self.absfile)
+        lstat = os.stat(srcfile)
+        fstat = os.stat(srcfile)
+        dstat = os.stat(self.mtdir)
+        self.test(lstat != None, "link - link should be created")
+        self.test(fstat.st_nlink == fstat_b.st_nlink+1, "link - file st_nlink should be incremented by 1")
+        self.test(fstat.st_ctime > fstat_b.st_ctime, "link - file st_ctime should be updated")
+        self.test(dstat.st_ctime > dstat_b.st_ctime, "link - parent directory st_ctime should be updated")
+        self.test(dstat.st_mtime > dstat_b.st_mtime, "link - parent directory st_mtime should be updated")
+
+    def lseek_test(self):
+        """Verify POSIX API lseek() with different offsets and whence
+           values including seeking past the end of the file.
+        """
+        self.test_group("Verify POSIX API lseek() on %s" % self.str_nfs())
+
+        data = "AAAAAAAAAAAAAAAAAAAA"
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT)
+        self.dprint('DBG3', "Write file [%s]" % data)
+        count = posix.write(fd, data)
+        self.test(count == len(data), "lseek - write should succeed at offset=0")
+        self.dprint('DBG3', "Set file pointer lseek(4, SEEK_SET)")
+        offset = posix.lseek(fd, 4, os.SEEK_SET)
+        self.test(offset == 4, "lseek - offset: 4, whence: SEEK_SET succeeds")
+        self.dprint('DBG3', "Write file [%s]" % 'BBBB')
+        count = posix.write(fd, 'BBBB')
+        self.dprint('DBG3', "Set file pointer lseek(8, SEEK_CUR)")
+        offset = posix.lseek(fd, 8, os.SEEK_CUR)
+        self.test(offset == 16, "lseek - offset: 8, whence: SEEK_CUR succeeds")
+        self.dprint('DBG3', "Write file [%s]" % 'CCCCCC')
+        count = posix.write(fd, 'CCCCCC')
+        self.dprint('DBG3', "Set file pointer lseek(1000, SEEK_END)")
+        offset = posix.lseek(fd, 1000, os.SEEK_END)
+        self.test(offset == 1022, "lseek - offset: 1000, whence: SEEK_END succeeds")
+        self.dprint('DBG3', "Write file [%s]" % 'DDDDDDDD')
+        count = posix.write(fd, 'DDDDDDDD')
+        if self.nfsversion > 2:
+            N = 2*1024*1024*1024
+            self.dprint('DBG3', "Set file pointer lseek(2GB, SEEK_SET)")
+            offset = posix.lseek(fd, N, os.SEEK_SET)
+            self.test(offset == N, "lseek - offset: 2GB, whence: SEEK_SET succeeds")
+            self.dprint('DBG3', "Set file pointer lseek(2GB-1, SEEK_CUR)")
+            offset = posix.lseek(fd, N-1, os.SEEK_CUR)
+            self.test(offset == 2*N-1, "lseek - offset: 4GB-1, whence: SEEK_CUR succeeds")
+            self.dprint('DBG3', "Set file pointer lseek(2GB, SEEK_END)")
+            offset = posix.lseek(fd, N, os.SEEK_END)
+            self.test(offset == N+1030, "lseek - offset: 2GB+22, whence: SEEK_END succeeds")
+        posix.close(fd)
+
+        self.dprint('DBG3', "Open file %s for reading" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_RDONLY)
+        self.dprint('DBG3', "Set file pointer lseek(4, SEEK_SET)")
+        offset = posix.lseek(fd, 4, os.SEEK_SET)
+        self.dprint('DBG3', "Read 4 bytes")
+        data = posix.read(fd, 4)
+        self.test(data == 'BBBB', "lseek - read data at offset = 4 should be correct")
+        self.dprint('DBG3', "Set file pointer lseek(16, SEEK_SET)")
+        offset = posix.lseek(fd, 16, os.SEEK_SET)
+        self.dprint('DBG3', "Read 6 bytes")
+        data = posix.read(fd, 6)
+        self.test(data == 'CCCCCC', "lseek - read data at offset = 16 should be correct")
+        self.dprint('DBG3', "Set file pointer lseek(1022, SEEK_SET)")
+        offset = posix.lseek(fd, 1022, os.SEEK_SET)
+        self.dprint('DBG3', "Read 8 bytes")
+        data = posix.read(fd, 8)
+        self.test(data == 'DDDDDDDD', "lseek - read data at offset = 1022 should be correct")
+        posix.close(fd)
+
+    def _stat_obj(self, mode, stat_mode=1, type='file', srcfile=None, srctype='file'):
+        """Verify POSIX API stat()/lstat()/fstat() by checking the mode on a file and
+           that it returns the expected structure members. Create a symlink and
+           verify that stat()/lstat()/fstat() returns information about the file/link.
+
+           mode:
+               Expected permission mode
+           stat_mode:
+               Stat function to use (1: 'stat', 2: 'lstat', 3: 'fstat')
+           type:
+               Type of file system object under test [default: 'file']
+           srcfile:
+               Source file of symbolic link [default: None]
+           srctype:
+               Type of file system object for source of symbolic link [default: 'file']
+        """
+        op_str = stat_map[stat_mode]
+        reg = 'regular ' if type == 'file' else ''
+        size = self.filesize
+        nlink = 1
+        if type == 'file' or (srcfile != None and srctype == 'file'):
+            is_func = stat.S_ISREG
+        elif type == 'directory' or (srcfile != None and srctype == 'directory'):
+            is_func = stat.S_ISDIR
+            nlink = 2
+            stv = os.statvfs(self.absfile)
+            size = stv.f_bsize
+
+        if stat_mode == 1:
+            self.dprint('DBG3', "stat %s [%s]" % (type, self.absfile))
+            fstat = posix.stat(self.absfile)
+        elif stat_mode == 2:
+            self.dprint('DBG3', "lstat %s [%s]" % (type, self.absfile))
+            fstat = posix.lstat(self.absfile)
+            if srcfile != None:
+                mode = 0777
+                size = len(srcfile)
+                is_func = stat.S_ISLNK
+                nlink = 1
+        else:
+            self.dprint('DBG3', "fstat %s [%s]" % (type, self.absfile))
+            if type == 'directory':
+                self.dprint('DBG3', "Open directory %s" % self.absfile)
+                fd = posix.open(self.absfile, posix.O_RDONLY|posix.O_NONBLOCK|posix.O_DIRECTORY)
+            else:
+                self.dprint('DBG3', "Open file %s for reading" % self.absfile)
+                fd = posix.open(self.absfile, posix.O_RDONLY)
+            fstat = posix.fstat(fd)
+            posix.close(fd)
+
+        self.test(fstat.st_mode & 0777 == mode, "%s - %s permissions should be correct" % (op_str, type), failmsg=", expecting %05o and got %05o" % (mode, fstat.st_mode & 0777))
+        self.test(is_func(fstat.st_mode), "%s - object type should be a %s%s" % (op_str, reg, type))
+        self.test(fstat.st_nlink == nlink, "%s - %s st_nlink should be equal to %d" % (op_str, type, nlink), failmsg=", expecting %d and got %d" % (nlink, fstat.st_nlink))
+        self.test(fstat.st_uid == os.getuid(), "%s - %s st_uid should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (os.getuid(), fstat.st_uid))
+        self.test(fstat.st_gid == os.getgid(), "%s - %s st_gid should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (os.getgid(), fstat.st_gid))
+        self.test(fstat.st_size == size, "%s - %s st_size should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (size, fstat.st_size))
+        self.test(fstat.st_ino != None, "%s - %s st_ino should be returned" % (op_str, type))
+        self.test(fstat.st_dev != None, "%s - %s st_dev should be returned" % (op_str, type))
+        self.test(fstat.st_atime != None, "%s - %s st_atime should be returned" % (op_str, type))
+        self.test(fstat.st_mtime != None, "%s - %s st_mtime should be returned" % (op_str, type))
+        self.test(fstat.st_ctime != None, "%s - %s st_ctime should be returned" % (op_str, type))
+
+    def _stat_test(self, stat_mode=1):
+        """Verify POSIX API stat()/lstat()/fstat() by checking the mode on a file and
+           that it returns the expected structure members. Create a symlink and
+           verify that stat()/lstat()/fstat() returns information about the file/link.
+
+           Test a regular file, directory, symbolic link to a file,
+           and symbolic link to a directory.
+        """
+        op_str = stat_map[stat_mode]
+        self.test_group("Verify POSIX API %s() on %s" % (op_str, self.str_nfs()))
+
+        self.test_info("Regular file")
+        self.create_file(mode=0754)
+        self._stat_obj(0754, stat_mode=stat_mode, type='file')
+        testfile = self.absfile
+
+        self.test_info("Directory")
+        self.create_dir(mode=0755)
+        self.absfile = self.absdir
+        self._stat_obj(0755, stat_mode=stat_mode, type='directory')
+        testdir = self.absdir
+
+        self.test_info("Symbolic link to a file")
+        srcfile = testfile
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link to file [%s -> %s]" % (self.absfile, srcfile))
+        os.symlink(srcfile, self.absfile)
+        self._stat_obj(0754, stat_mode=stat_mode, type='symbolic link', srcfile=srcfile)
+
+        self.test_info("Symbolic link to a directory")
+        srcfile = testdir
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link to directory [%s -> %s]" % (self.absfile, srcfile))
+        os.symlink(srcfile, self.absfile)
+        self._stat_obj(0755, stat_mode=stat_mode, type='symbolic link', srcfile=srcfile, srctype='directory')
+
+    def lstat_test(self):
+        """Verify POSIX API lstat() by checking the mode on a file and that
+           it returns the expected structure members. Create a symlink and
+           verify that lstat returns information about the link.
+        """
+        self._stat_test(stat_mode=2)
+
+    def mkdir_test(self):
+        """Verify POSIX API mkdir(). Verify that mkdir with a path of a symbolic
+           link fails. Verify that the st_ctime and st_mtime fields of the
+           parent directory are updated.
+        """
+        self.test_group("Verify POSIX API mkdir() on %s" % self.str_nfs())
+
+        topdir = self.create_dir()
+        abstopdir = self.absdir
+        dstat_b = os.stat(abstopdir)
+        sleep(1)
+
+        mode = 0754
+        self.get_dirname(dir=topdir)
+        self.dprint('DBG3', "Creating directory [%s]" % self.absdir)
+        posix.mkdir(self.absdir, mode)
+        dstat = os.stat(self.absdir)
+        self.test(os.path.exists(self.absdir), "mkdir - directory should be created")
+        self.test(dstat.st_mode & 0777 == mode, "mkdir - mode permissions of created directory should be correct")
+
+        dstat = os.stat(abstopdir)
+        self.test(dstat.st_ctime > dstat_b.st_ctime, "mkdir - parent directory st_ctime should be updated")
+        self.test(dstat.st_mtime > dstat_b.st_mtime, "mkdir - parent directory st_mtime should be updated")
+
+        try:
+            posix.mkdir(self.absdir, mode)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 17, "mkdir - create directory should return an error if name already exists as a directory")
+
+        self.create_file()
+        try:
+            posix.mkdir(self.absfile, mode)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 17, "mkdir - create directory should return an error if name already exists as a file")
+
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link to directory [%s -> %s]" % (self.absfile, abstopdir))
+        os.symlink(abstopdir, self.absfile)
+        try:
+            posix.mkdir(self.absfile, mode)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 17, "mkdir - create directory should return an error if name already exists as a symbolic link")
+
+    def _mmap_test(self, objtype):
+        """Verify POSIX API mmap() by mapping a file and verifying I/O
+           operations. Verify mmap followed by memory read of existing
+           file works. Verify mmap followed by memory write to file works.
+
+           Verify POSIX API munmap() by mapping a file and then unmapping
+           the file.
+        """
+        self.test_group("Verify POSIX API %s() on %s" % (objtype, self.str_nfs()))
+        N = self.filesize
+
+        absfile = self.abspath(self.files[0])
+        self.dprint('DBG3', "Open file %s for reading" % absfile)
+        fd = posix.open(absfile, posix.O_RDONLY)
+
+        self.dprint('DBG3', "mmap file for reading")
+        self.libc.mmap.restype = ctypes.c_void_p
+        addr = self.libc.mmap(0, N, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+        ptr = ctypes.cast(addr, ctypes.c_char_p)
+        self.test(ptr.value[:N] == self.data_pattern(0,N), "%s - read data should be correct" % objtype)
+        self.dprint('DBG3', "munmap file")
+        out = self.libc.munmap(addr, N)
+        self.test(out == 0, "%s - munmap should succeed" % objtype)
+        posix.close(fd)
+
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for reading and writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_RDWR|posix.O_CREAT)
+        # Write a dummy byte at end of file to reserve space on the file
+        posix.lseek(fd, N-1, os.SEEK_SET)
+        posix.write(fd, '\000')
+
+        self.dprint('DBG3', "mmap file for writing")
+        addr = self.libc.mmap(0, N, mmap.PROT_READ|mmap.PROT_WRITE, mmap.MAP_SHARED, fd, 0)
+        ptr = ctypes.cast(addr, ctypes.c_char_p)
+        self.libc.memcpy(ptr, self.data_pattern(0,N), N)
+        self.dprint('DBG3', "munmap file")
+        out = self.libc.munmap(addr, N)
+        posix.close(fd)
+
+        fd = open(self.absfile, "r")
+        data = fd.read()
+        fd.close()
+        self.test(data == self.data_pattern(0,N), "%s - written data should be correct" % objtype)
+        self.test(out == 0, "%s - munmap should succeed" % objtype)
+
+        absfile = self.abspath(self.files[0])
+        fd = posix.open(absfile, posix.O_RDONLY)
+        posix.close(fd)
+
+        if objtype == 'mmap':
+            self.dprint('DBG3', "mmap on closed file")
+            self.libc.mmap.restype = ctypes.c_int
+            addr = self.libc.mmap(0, N, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+            self.test(addr == -1, "%s - mmap on closed file should return an error" % objtype)
+
+    def mmap_test(self):
+        """Verify POSIX API mmap() by mapping a file and verifying I/O
+           operations. Verify mmap followed by memory read of existing
+           file works. Verify mmap followed by memory write to file works.
+        """
+        self._mmap_test('mmap')
+
+    def munmap_test(self):
+        """Verify POSIX API munmap() by mapping a file and then unmapping
+           the file.
+        """
+        self._mmap_test('munmap')
+
+    def _test_open(self, testid, expr, msg=""):
+        """Display open test result according to --tverbose option."""
+        test_list = self.open_test_msgs[testid]
+        if self.tverbose != 1:
+            self.test(expr, test_list[2] + msg)
+        elif expr:
+            test_list[0] += 1
+        else:
+            test_list[1] += 1
+
+    def open_test(self):
+        """Verify POSIX API open() on a file. Verify file creation using
+           the O_CREAT flag and verifying the file mode is set to the
+           specified value. Verify the st_ctime and st_mtime are updated
+           on the parent directory after the file was created. Verify open
+           on existing file fails with the O_EXCL flag set. Verify write
+           succeeds and read fails if file was open with O_WRONLY. Verify
+           read succeeds and write fails if file was open with O_RDONLY.
+           Verify that all writes with O_APPEND set are to the end of the file.
+           Use O_DSYNC, O_RSYNC, and O_SYNC flags in open calls.
+           Verify file open with O_CREAT and O_TRUNC set will truncate an
+           existing file. Verify that it updates the file st_ctime and st_mtime.
+        """
+        self.test_group("Verify POSIX API open() on %s" % self.str_nfs())
+
+        flist = []
+        flag_list = list(open_flag_list)
+        try:
+            # Remove flag with no bits set
+            flag_list.remove(0)
+            flist += [(0,)]
+        except:
+            pass
+
+        # Create a list of all possible combination of flags
+        for i in xrange(1, len(flag_list)+1):
+            flist += list(itertools.combinations(flag_list, i))
+
+        iosize = 32
+        self.create_dir()
+        self.get_filename(dir=self.dirname)
+        filename = os.path.basename(self.absfile)
+
+        for ftype in ['non-existent', 'existent']:
+            self.test_info("Open tests for %s file" % ftype)
+            self.open_test_msgs = [
+                [0, 0, "open - opening existent file should return an error when O_RDONLY|O_TRUNC is used"],
+                [0, 0, "open - opening existent file should return an error when O_EXCL|O_CREAT is used"],
+                [0, 0, "open - opening existent file should return an error when O_DIRECTORY is used"],
+                [0, 0, "open - opening existent file should succeed"],
+                [0, 0, "open - permission mode should not be changed when opening existent file"],
+                [0, 0, "open - file should be created when O_CREAT is used"],
+                [0, 0, "open - file should be created with correct permission mode"],
+                [0, 0, "open - opening non-existent file should return an error when O_CREAT is not used"],
+                [0, 0, "open - writing file should succeed when opening file with O_WRONLY or O_RDWR"],
+                [0, 0, "open - writing file should return an error when opening file with O_RDONLY"],
+                [0, 0, "open - reading file should succeed when opening file with O_RDONLY or O_RDWR"],
+                [0, 0, "open - reading file should return an error when opening file with O_WRONLY"],
+            ]
+            if ftype == 'existent':
+                self.create_file()
+                os.chmod(self.absfile, 0777)
+            for flags in flist:
+                try:
+                    opened = False
+                    flag_str = oflag_str(flags)
+                    mode = 0
+                    for flag in flags:
+                        mode |= flag
+
+                    perms = 0700 | random.randint(0,077)
+                    if perms == 0777 and ftype == 'existent':
+                        # Change open permissions to make it different that current
+                        # file permissions
+                        perms = 0755
+
+                    # Booleans for checking file if able to read or/and write
+                    is_write_allowed = posix.O_WRONLY in flags or posix.O_RDWR in flags
+                    is_read_allowed = posix.O_WRONLY not in flags or posix.O_RDWR in flags
+
+                    # Check for invalid combinations
+                    if posix.O_DIRECTORY in flags and posix.O_CREAT in flags:
+                        continue
+                    if posix.O_EXCL in flags and posix.O_CREAT not in flags:
+                        # The behavior of O_EXCL is undefined if O_CREAT is not specified
+                        continue
+                    if posix.O_WRONLY in flags and posix.O_RDWR in flags:
+                        continue
+                    if not is_write_allowed and posix.O_EXCL in flags:
+                        continue
+
+                    try:
+                        e = None
+                        self.dprint('DBG7', "Open %s file %s with flags %s" % (ftype, filename, flag_str))
+                        fd = posix.open(self.absfile, mode, perms)
+                        opened = True
+                    except OSError as e:
+                        pass
+
+                    if ftype == 'existent':
+                        if posix.O_EXCL in flags and posix.O_CREAT in flags:
+                            # O_EXCL and O_CREAT are set
+                            self._test_open(1, e != None and e.errno == 17, ", flags %s" % flag_str)
+                            continue
+                        if posix.O_DIRECTORY in flags:
+                            # O_DIRECTORY is set
+                            self._test_open(2, e != None and e.errno == 20, ", flags %s" % flag_str)
+                            continue
+                        if posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
+                            # O_RDONLY and O_TRUNC are set
+                            self._test_open(0, e != None and e.errno == 9, ", flags %s" % flag_str)
+                            continue
+                        fstat = os.stat(self.absfile)
+                        self._test_open(3, e == None, " with flags %s" % flag_str)
+                        if e:
+                            # The open failed, move on to the next test
+                            continue
+                        self._test_open(4, fstat.st_mode & 0777 != perms)
+                    else:
+                        if posix.O_CREAT in flags:
+                            # O_CREAT is set
+                            self._test_open(5, os.path.exists(self.absfile), ", flags %s" % flag_str)
+                            fstat = os.stat(self.absfile)
+                            self._test_open(6, fstat.st_mode & 0777 == perms)
+                        else:
+                            # O_CREAT is not set
+                            self._test_open(7, e != None and e.errno == 2, ", flags %s" % flag_str)
+                            continue
+
+                    wdata = self.data_pattern(0, iosize)
+                    try:
+                        ioe = None
+                        posix.write(fd, wdata)
+                    except OSError as ioe:
+                        pass
+
+                    if is_write_allowed:
+                        self._test_open(8, ioe == None)
+                    else:
+                        self._test_open(9, ioe != None and ioe.errno == 9)
+
+                    try:
+                        ioe = None
+                        posix.lseek(fd, 0, os.SEEK_SET)
+                        rdata = posix.read(fd, iosize)
+                    except OSError as ioe:
+                        pass
+
+                    if is_read_allowed:
+                        self._test_open(10, ioe == None)
+                    else:
+                        self._test_open(11, ioe != None and ioe.errno == 9)
+
+                except Exception:
+                    self.test(False, traceback.format_exc())
+                finally:
+                    if opened:
+                        self.dprint('DBG7', "Close file %s" % filename)
+                        posix.close(fd)
+                        if ftype != 'existent':
+                            self.dprint('DBG5', "Removing file [%s]" % self.absfile)
+                            os.unlink(self.absfile)
+            if self.tverbose == 1:
+                for item in self.open_test_msgs:
+                    if item[0] + item[1] > 0:
+                        msg = " (%d passed, %d failed)" % (item[0], item[1])
+                        self.test(item[1] == 0, item[2] + msg)
+
+    def opendir_test(self):
+        """Verify POSIX API opendir() on a directory."""
+        self.test_group("Verify POSIX API opendir() on %s" % self.str_nfs())
+
+        self.create_dir()
+        fd = self.libc.opendir(self.absdir)
+        self.libc.closedir(fd)
+        self.test(fd > 0, "opendir - opendir() on an existent directory should succeed")
+        fd = self.libc.opendir(self.absdir+'bogus')
+        self.test(fd == 0, "opendir - opendir() on a non-existent directory should fail")
+
+    def read_test(self):
+        """Verify POSIX API read() by reading data from a file. Verify that
+           the st_atime of the file is updated after the read. Verify a read
+           of 0 bytes returns 0.
+        """
+        self.test_group("Verify POSIX API read() on %s" % self.str_nfs())
+        #self.umount()
+        #self.mount()
+
+        absfile = self.abspath(self.files[0])
+        self.dprint('DBG3', "Open file %s for reading" % absfile)
+        fd = posix.open(absfile, posix.O_RDONLY)
+        fstat_b = os.stat(absfile)
+        sleep(1)
+
+        self.dprint('DBG3', "Read data from file %s using POSIX API read()" % absfile)
+        data = posix.read(fd, 0)
+        self.test(len(data) == 0, "read - reading 0 bytes should return 0")
+        data = posix.read(fd, self.filesize)
+        self.test(data == self.data_pattern(0, len(data)), "read - reading file should succeed")
+        posix.close(fd)
+        fstat = os.stat(absfile)
+        self.test(fstat.st_atime > fstat_b.st_atime, "read - file st_atime should be updated")
+
+    def readdir_test(self):
+        """Verify POSIX API readdir() on a directory."""
+        self.test_group("Verify POSIX API readdir() on %s" % self.str_nfs())
+
+        self.create_dir()
+        self.create_file(dir=self.dirname)
+        filename = os.path.basename(self.filename)
+
+        fd = self.libc.opendir(self.absdir)
+        dirlist = []
+        while True:
+            c_dirent = self.libc.readdir(fd)
+            if c_dirent == 0:
+                break
+            dirent = ctypes.cast(c_dirent, ctypes.POINTER(DirEnt))
+            dirlist.append(dirent[0].d_name)
+        self.libc.closedir(fd)
+
+        self.test(len(dirlist) > 0, "readdir - readdir() on an open directory should succeed")
+        self.test(filename in dirlist, "readdir - file in directory should be returned by readdir()")
+        self.test(True, "readdir - readdir() should return 0 at the end of the list")
+
+    def readlink_test(self):
+        """Verify Test POSIX API readlink() by reading a symbolic link."""
+        self.test_group("Verify POSIX API readlink() on %s" % self.str_nfs())
+
+        self.create_file()
+        srcfile = self.absfile
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link to file [%s -> %s]" % (self.absfile, srcfile))
+        os.symlink(srcfile, self.absfile)
+        data = posix.readlink(self.absfile)
+        self.test(data == srcfile, "readlink - data of symbolic link should be the name of the source file")
+
+        self.create_dir()
+        srcdir = self.absdir
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link to directory [%s -> %s]" % (self.absfile, srcdir))
+        os.symlink(srcdir, self.absfile)
+        data = posix.readlink(self.absfile)
+        self.test(data == srcdir, "readlink - data of symbolic link should be the name of the source directory")
+
+    def rename_test(self):
+        """Verify POSIX API rename() by renaming a file, directory, and a
+           symbolic link. Verify that a rename from a file to a symbolic
+           link will cause the symbolic link to be removed.
+        """
+        self.test_group("Verify POSIX API rename() on %s" % self.str_nfs())
+
+        self.test_info("Rename file")
+        self.create_file()
+        oldname = self.absfile
+        self.get_filename()
+        self.dprint('DBG3', "Rename file %s to %s using POSIX API rename()" % (oldname, self.absfile))
+        posix.rename(oldname, self.absfile)
+        self.test(os.path.exists(self.absfile), "rename - new file name should exist")
+        self.test(not os.path.exists(oldname), "rename - old file name should not exist")
+
+        self.test_info("Rename directory")
+        self.create_dir()
+        oldname = self.absdir
+        self.get_dirname()
+        self.dprint('DBG3', "Rename directory %s to %s using POSIX API rename()" % (oldname, self.absdir))
+        posix.rename(oldname, self.absdir)
+        self.test(os.path.exists(self.absdir), "rename - new directory name should exist")
+        self.test(not os.path.exists(oldname), "rename - old directory name should not exist")
+
+        self.test_info("Rename symbolic link")
+        srcfile = self.absfile
+        self.get_filename()
+        self.dprint('DBG3', "Creating symbolic link [%s -> %s]" % (self.absfile, srcfile))
+        os.symlink(srcfile, self.absfile)
+        oldname = self.absfile
+        self.get_filename()
+        self.dprint('DBG3', "Rename symbolic link %s to %s using POSIX API rename()" % (oldname, self.absfile))
+        posix.rename(oldname, self.absfile)
+        self.test(os.path.exists(self.absfile), "rename - new symbolic link name should exist")
+        self.test(not os.path.exists(oldname), "rename - old symbolic link name should not exist")
+        self.test(os.path.islink(self.absfile), "rename - new name should be a symbolic link")
+
+        self.test_info("Rename file to an existing symbolic link")
+        newname = self.absfile
+        self.create_file()
+        oldname = self.absfile
+        self.dprint('DBG3', "Rename file %s to an existing symbolic link %s using POSIX API rename()" % (oldname, newname))
+        posix.rename(oldname, newname)
+        self.test(os.path.exists(newname), "rename - new file name should exist")
+        self.test(not os.path.exists(oldname), "rename - old file name should not exist")
+        self.test(os.path.isfile(newname) and not os.path.islink(newname), "rename - new name should be a regular file")
+
+    def rewinddir_test(self):
+        """Verify POSIX API rewinddir() on a directory."""
+        self._tell_seek_dir_test('rewinddir')
+
+    def rmdir_test(self):
+        """Verify POSIX API rmdir() by removing a directory. Verify that the
+           parent's st_ctime and st_mtime are updated.
+        """
+        self.test_group("Verify POSIX API rmdir() on %s" % self.str_nfs())
+
+        dir = self.create_dir()
+        topdir = self.absdir
+        self.create_dir(dir=dir)
+        dstat_b = os.stat(topdir)
+        sleep(1)
+
+        self.dprint('DBG3', "Remove directory %s using POSIX API rmdir()" % self.absdir)
+        posix.rmdir(self.absdir)
+        dstat = os.stat(topdir)
+        self.test(not os.path.exists(self.absdir),   "rmdir - directory should be removed")
+        self.test(dstat.st_ctime > dstat_b.st_ctime, "rmdir - parent directory st_ctime should be updated")
+        self.test(dstat.st_mtime > dstat_b.st_mtime, "rmdir - parent directory st_mtime should be updated")
+
+        try:
+            posix.rmdir(self.absdir+'bogus')
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 2, "rmdir - removing non-existent directory should return an error")
+
+        self.create_dir(dir=dir)
+        self.create_file(dir=dir)
+        try:
+            posix.rmdir(topdir)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 39, "rmdir - removing non-empty directory should return an error")
+
+    def seekdir_test(self):
+        """Verify POSIX API seekdir() on a directory."""
+        self._tell_seek_dir_test('seekdir')
+
+    def stat_test(self):
+        """Verify POSIX API stat() by checking the mode on a file and that
+           it returns the expected structure members. Create a symlink and
+           verify that stat returns information about the file.
+        """
+        self._stat_test(stat_mode=1)
+
+    def statvfs_test(self):
+        """Verify POSIX API statvfs() by making sure all the members of the
+           structure are returned.
+        """
+        self.test_group("Verify POSIX API statvfs() on %s" % self.str_nfs())
+
+        self.create_file()
+        self._statvfs_test(path=self.absfile)
+
+        self.create_dir()
+        self._statvfs_test(path=self.absdir, objtype='directory')
+
+    def symlink_test(self):
+        """Verify POSIX API symlink() by creating a symbolic link and verify
+           that the file type is slnk.
+        """
+        self.test_group("Verify POSIX API symlink() on %s" % self.str_nfs())
+
+        srcfile = self.abspath(self.files[0])
+        self.get_filename()
+        self.dprint('DBG3', "Create symbolic link %s -> %s using POSIX API symlink()" % (self.absfile, srcfile))
+        posix.symlink(srcfile, self.absfile)
+        lstat = os.lstat(self.absfile)
+        rlink = os.readlink(self.absfile)
+        self.test(lstat != None, "symlink - symbolic link should be created")
+        self.test(stat.S_ISLNK(lstat.st_mode), "symlink - object type should be a symbolic link")
+        self.test(lstat.st_mode & 0777 == 0777, "symlink - symbolic link should be created with correct mode 0777")
+        self.test(rlink == srcfile, "symlink - symbolic link data should be the name of the source file")
+
+    def _sync(self, objtype):
+        """Verify POSIX API sync(), fdatasync() or fsync()."""
+        self.test_group("Verify POSIX API %s() on %s" % (objtype, self.str_nfs()))
+
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT)
+
+        offset = 0
+        self.dprint('DBG3', "Write data to file")
+        count = posix.write(fd, self.data_pattern(0, self.filesize))
+        offset += count
+        sleep(1)
+        self.dprint('DBG3', "Write data to file")
+        count = posix.write(fd, self.data_pattern(offset, self.filesize))
+        offset += count
+        sleep(1)
+        self.dprint('DBG3', "Write data to file")
+        count = posix.write(fd, self.data_pattern(offset, self.filesize))
+        offset += count
+
+        self.dprint('DBG3', "Sync data to file")
+        if objtype == 'sync':
+            self.libc.sync()
+        elif objtype == 'fsync':
+            posix.fsync(fd)
+        else:
+            posix.fdatasync(fd)
+        self.test(True, "%s - sync should succeed" % objtype)
+        posix.close(fd)
+
+        if objtype == 'sync':
+            self.libc.sync()
+            self.test(True, "%s - sync after close should succeed" % objtype)
+            return
+        try:
+            if objtype == 'fsync':
+                posix.fsync(fd)
+            elif objtype == 'fdatasync':
+                posix.fdatasync(fd)
+        except OSError as e:
+            pass
+        self.test(e != None and e.errno == 9, "%s - sync after close should return an error" % objtype)
+
+    def sync_test(self):
+        """Verify POSIX API sync()."""
+        self._sync('sync')
+
+    def _readdir(self, fd, offset):
+        """Wrapper for readdir()."""
+        self.libc.seekdir(fd, offset)
+        c_dirent = self.libc.readdir(fd)
+        dirent = ctypes.cast(c_dirent, ctypes.POINTER(DirEnt))
+        return dirent[0].d_name
+
+    def _tell_seek_dir_test(self, objtype):
+        """Verify POSIX API telldir(), seekdir() or rewinddir() on a directory."""
+        self.test_group("Verify POSIX API %s() on %s" % (objtype, self.str_nfs()))
+
+        self.create_dir()
+        N = 5
+        for i in xrange(N):
+            self.create_file(dir=self.dirname)
+
+        fd = self.libc.opendir(self.absdir)
+
+        dirlist = []
+        offsets = []
+        while True:
+            offset = self.libc.telldir(fd)
+            offsets.append(offset)
+            c_dirent = self.libc.readdir(fd)
+            if c_dirent == 0:
+                break
+            dirent = ctypes.cast(c_dirent, ctypes.POINTER(DirEnt))
+            dirlist.append(dirent[0].d_name)
+
+        if objtype == 'rewinddir':
+            self.libc.rewinddir(fd)
+            self.test(True, "%s - directory rewind should succeed after reaching end of list" % objtype)
+            c_dirent = self.libc.readdir(fd)
+            dirent = ctypes.cast(c_dirent, ctypes.POINTER(DirEnt))
+            self.test(dirent[0].d_name == dirlist[0], "%s - directory entry is correct after rewind" % objtype)
+            index = int(N/2)
+            name = self._readdir(fd, index)
+            self.libc.rewinddir(fd)
+            self.test(True, "%s - directory rewind from the middle of list should succeed" % objtype)
+            c_dirent = self.libc.readdir(fd)
+            dirent = ctypes.cast(c_dirent, ctypes.POINTER(DirEnt))
+            self.test(dirent[0].d_name == dirlist[0], "%s - directory entry is correct after rewind" % objtype)
+        else:
+            list = range(N)
+            random.shuffle(list)
+            for index in list:
+                name = self._readdir(fd, offsets[index])
+                self.test(name == dirlist[index], "%s - directory entry is correct at offset = %d" % (objtype, offsets[index]))
+
+        self.libc.closedir(fd)
+
+    def telldir_test(self):
+        """Verify POSIX API telldir() on a directory."""
+        self._tell_seek_dir_test('telldir')
+
+    def unlink_test(self):
+        """Verify POSIX API unlink() by unlinking a file and verify that it
+           was removed. Verify that the st_ctime and st_mtime fields of the
+           parent directory were updated. Then unlink a symbolic link and
+           verify that the symbolic link was removed but not the referenced
+           file. Then remove an open file and verify that I/O still occurs
+           to the file after the unlink and that the file gets removed when
+           the file is closed. Create a file and then hard link to it so the
+           link count is greater than 1. Unlink the hard file and verify that
+           st_ctime field is updated.
+        """
+        self.test_group("Verify POSIX API unlink() on %s" % self.str_nfs())
+
+        self.create_file()
+        dstat_b = os.stat(self.mtdir)
+        sleep(1)
+
+        self.test_info("Unlink file")
+        self.dprint('DBG3', "Remove file %s using POSIX API unlink()" % self.absfile)
+        posix.unlink(self.absfile)
+        dstat = os.stat(self.mtdir)
+        self.test(not os.path.exists(self.absfile), "unlink - file should be removed")
+        self.test(dstat.st_ctime > dstat_b.st_ctime, "unlink - parent directory st_ctime should be updated")
+        self.test(dstat.st_mtime > dstat_b.st_mtime, "unlink - parent directory st_mtime should be updated")
+
+        self.test_info("Unlink symbolic link")
+        self.create_file()
+        srcfile = self.absfile
+        self.get_filename()
+        os.symlink(srcfile, self.absfile)
+        self.dprint('DBG3', "Remove symbolic link %s using POSIX API unlink()" % self.absfile)
+        posix.unlink(self.absfile)
+        self.test(not os.path.exists(self.absfile), "unlink - symbolic link should be removed")
+        self.test(os.path.exists(srcfile), "unlink - symbolic link source file should not be removed")
+
+        self.test_info("Unlink open file")
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT)
+        self.dprint('DBG3', "Remove file %s using POSIX API unlink()" % self.absfile)
+        posix.unlink(self.absfile)
+        self.test(not os.path.exists(self.absfile), "unlink - open file should be removed")
+        self.dprint('DBG3', "Write file %s %s@0" % (self.absfile, self.filesize))
+        count = posix.write(fd, self.data_pattern(0, self.filesize))
+        self.test(count > 0, "unlink - write should succeed after unlink()")
+        posix.close(fd)
+        self.test(not os.path.exists(self.absfile), "unlink - open file should be removed after close()")
+
+        self.test_info("Unlink file after hard link is created")
+        self.create_file()
+        srcfile = self.absfile
+        self.get_filename()
+        self.dprint('DBG3', "Create hard link %s to file %s" % (self.absfile, srcfile))
+        os.link(srcfile, self.absfile)
+        fstat_b = os.stat(self.absfile)
+        sleep(1)
+
+        self.dprint('DBG3', "Remove file %s using POSIX API unlink()" % srcfile)
+        posix.unlink(srcfile)
+        fstat = os.stat(self.absfile)
+        self.test(not os.path.exists(srcfile), "unlink - original file should be removed")
+        self.test(os.path.exists(self.absfile), "unlink - hard link file should not be removed")
+        self.test(fstat.st_nlink == fstat_b.st_nlink-1, "unlink - file st_nlink should be decremented by 1")
+        self.test(fstat.st_ctime > fstat_b.st_ctime, "unlink - file st_ctime should be updated")
+
+    def write_test(self):
+        """Verify POSIX API write() by writing 0 bytes and verifying 0
+           is returned. Write a pattern the file, seek +N, write another
+           pattern, and close the file. Open the file and read in both
+           written patterns and verify that it is the correct pattern.
+           Read in the data from the hole in the file and verify that it is 0.
+        """
+        self.test_group("Verify POSIX API write() on %s" % self.str_nfs())
+
+        self.get_filename()
+        self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT)
+        fstat_b = os.stat(self.absfile)
+        sleep(1)
+
+        self.dprint('DBG3', "Write 0 bytes to file %s using POSIX API write()" % self.absfile)
+        count = posix.write(fd, '')
+        self.test(count == 0, "write - writing 0 bytes should return 0")
+
+        self.dprint('DBG3', "Write data to file %s at offset = 0 using POSIX API write()" % self.absfile)
+        count = posix.write(fd, self.data_pattern(0, self.filesize))
+        self.test(count == self.filesize, "write - writing N bytes should return N")
+
+        offset = posix.lseek(fd, self.filesize, os.SEEK_CUR)
+        self.dprint('DBG3', "Write data to file %s at different offset = N using POSIX API write()" % self.absfile)
+        count = posix.write(fd, self.data_pattern(offset, self.filesize))
+        posix.close(fd)
+
+        fstat = os.stat(self.absfile)
+        self.test(fstat.st_ctime > fstat_b.st_ctime, "write - file st_ctime should be updated")
+        self.test(fstat.st_mtime > fstat_b.st_mtime, "write - file st_mtime should be updated")
+
+        self.dprint('DBG3', "Open file %s for reading" % self.absfile)
+        fd = posix.open(self.absfile, posix.O_RDONLY)
+
+        self.dprint('DBG3', "Read data from file %s at offset = 0" % self.absfile)
+        data = posix.read(fd, 1000)
+        self.test(data == self.data_pattern(0, len(data)), "write - written data should be correct at offset = 0")
+
+        off = posix.lseek(fd, offset, os.SEEK_SET)
+        data = posix.read(fd, 1000)
+        self.test(data == self.data_pattern(off, len(data)), "write - written data should be correct at offset = N")
+
+        # Read hole
+        hsize = int(self.filesize/2)
+        off = posix.lseek(fd, offset-hsize, os.SEEK_SET)
+        data = posix.read(fd, hsize)
+        self.test(data == '\000'*len(data), "write - hole in middle of file should be read correctly")
+
+        posix.close(fd)
+
+################################################################################
+#  Entry point
+x = PosixTest(usage=USAGE, testnames=TESTNAMES)
+x.setup(nfiles=2)
+
+x.umount()
+x.mount()
+
+try:
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    x.exit()
+

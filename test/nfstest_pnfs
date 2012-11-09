@@ -1,0 +1,1234 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2012 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import time
+import fcntl
+import struct
+import traceback
+import nfstest_config as c
+from packet.nfs.nfs4_const import *
+from nfstest.test_util import TestUtil,FAIL
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2012 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> [options]
+
+Basic pNFS functional tests
+===========================
+Verify basic pNFS functionality for file (both READ and WRITE), including
+opening a second file within the same mount and having a lock on the file.
+Also, verify basic pNFS functionality for a file opened for both READ and
+WRITE while reading the file first and then writing to it or the other way
+around by writing to the file fist and then reading the file. These tests
+verify proper functionality of pNFS and NFSv4.1 as well.
+
+Examples:
+    The only required option is --server
+    $ %prog --server 192.168.0.11
+
+Notes:
+    The user id in the local host must have access to run commands as root
+    using the 'sudo' command without the need for a password."""
+
+TESTNAMES = [
+    'read',
+    'write',
+    'write_read',
+    'read_lock',
+    'write_lock',
+    'setattr',
+    'setattr_lock',
+    'rw_read',
+    'rw_write',
+    #'read_holes',
+    'one_ds',
+    'rsize',
+    'wsize',
+    'rwsize',
+    'nfsvers',
+]
+
+class pNFSTest(TestUtil):
+    """pNFSTest object
+
+       pNFSTest() -> New test object
+
+       Usage:
+           x = pNFSTest()
+
+           # Verify pNFS functionality for file given by filename
+           x.verify_file(filename, iomode)
+
+           # Verify pNFS functionality for file given by openfh structure on all DS's
+           x.verify_pnfs_functionality(openfh, iomode, filesize, multipath_ds_list, newgetdev, nocreate, nocreate_list, write_list)
+
+           # Verify DESTROY_SESSION should be sent to MDS and all DS's on umount
+           x.verify_destroy_session()
+
+           # Verify client only connects to the DS with I/O -- writing to first stripe only
+           x.verify_ds_connect_needed(layout, multipath_ds_list, ds_index=0)
+
+           # Verify client only connects to the DS with I/O -- writing to second stripe only
+           x.verify_ds_connect_needed(layout, multipath_ds_list, ds_index=1)
+
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        self.scan_options()
+        self.deviceids = {}
+        self.stripe_size = None
+        if self.nfsversion != 4 or self.minorversion == 0:
+            self.config("Cannot use %s for pNFS testing" % self.str_nfs())
+
+    def verify_stateid(self, openfh, sent_stateid):
+        """Return expected stateid of I/O and verify it with stateid sent
+           and return strings indicating which stateid is expected and
+           which stateid was actually sent.
+        """
+        open_stateid  = openfh['open_stateid']
+        lock_stateid  = openfh['lock_stateid']
+        deleg_stateid = openfh['deleg_stateid']
+        stateid_map = {
+            open_stateid:  "OPEN",
+            lock_stateid:  "LOCK",
+            deleg_stateid: "DELEG",
+        }
+
+        if deleg_stateid is not None:
+            stateid = deleg_stateid
+            stid_str = 'DELEG'
+        elif lock_stateid is not None:
+            stateid = lock_stateid
+            stid_str = 'LOCK'
+        else:
+            stateid = open_stateid
+            stid_str = 'OPEN'
+
+        stid_failmsg = None
+        if sent_stateid != None:
+            stid = stateid_map.get(sent_stateid, None)
+            if stid != None:
+                stid_failmsg = " - (not the %s stateid)" % stid
+
+        return (stateid, stid_str, stid_failmsg)
+
+    def verify_pnfs_functionality(self, openfh, iomode, filesize, multipath_ds_list, newgetdev=False, nocreate=False, nocreate_list=[], write_list=[], max_iosize=None, nmax_iosize=None):
+        """Verify pNFS functionality traffic going to the data servers.
+           It checks traffic to all DS's (EXCHANGE_ID, CREATE_SESSION,
+           READ/WRITE, COMMIT and LAYOUTCOMMIT).
+
+           openfh:
+               Open information for file (filehandle, open/delegation/lock
+               stateids, and delegation type)
+           iomode:
+               Expected iomode for layoutget
+           filesize:
+               File size used to verify correct LAYOUTCOMMIT last write offset
+               and GETATTR file size
+           multipath_ds_list:
+               List of DS's as returned by GETDEVICEINFO
+           newgetdev:
+               Get new device info [default: False]
+           nocreate:
+               Used to verify the client does not connect to MDS nor any DS
+               when set to True [default: False]
+               Option nocreate_list overwrites this value when checking DS's
+           nocreate_list:
+               List of booleans to control which DS the client does not connect.
+               Used when expecting the client to connect only to certain DS's
+               and not all [default: []]
+           write_list:
+               List of booleans to control which DS the client writes to.
+               Used when expecting write traffic only to certain DS's and
+               not all [default: []]
+           max_iosize:
+               Maximum number of bytes expected in each request [default: None]
+           nmax_iosize:
+               The number of bytes expected in each request should not be
+               restricted by this [default: None]
+        """
+        # Save current packet index
+        save_index = self.pktt.index
+        self.writeverf        = None
+        self.need_commit      = False
+        self.need_lcommit     = False
+        self.test_seqid       = True
+        self.test_stateid     = True
+        self.test_pattern     = True
+        self.test_stripe      = True
+        self.test_verf        = True
+        self.max_iosize       = 0
+        self.test_commit_full = True
+        self.test_commit_verf = True
+        self.test_no_commit   = False
+        self.dsio_list = []
+        self.stateid = None
+        test_pattern = True
+        io_str = 'READ' if iomode == LAYOUTIOMODE4_READ else 'WRITE'
+        layout_dense = 'dense' if self.layout['dense'] else 'sparse'
+        filehandle = openfh['filehandle']
+
+        # Get expected stateid
+        (stateid, stid_str, stid_failmsg) = self.verify_stateid(openfh, self.stateid)
+
+        # Get number of DS's in layout
+        nds = 0
+        for ds_list in multipath_ds_list:
+            nds += len(ds_list)
+
+        # Check if file size is big enough to send traffic to all DS's
+        self.dprint('DBG2', "Number of DataServers %d" % nds)
+        self.dprint('DBG2', "Stripe size %d" % self.layout['stripe_size'])
+        self.dprint('DBG2', "First stripe index %d" % self.layout['first_stripe_index'])
+        self.dprint('DBG2', "Using %s layouts" % layout_dense)
+        self.dprint('DBG2', "Commit thru MDS is %s" % self.layout['commit_mds'])
+        self.dprint('DBG2', "Device ID: %r" % self.layout['deviceid'])
+        if filesize < (nds-1) * self.layout['stripe_size'] + 1:
+            N = (filesize / (self.layout['stripe_size'] + 1)) + 1
+            if len(nocreate_list) == 0:
+                nocreate_list  = [False for i in range(N)]
+                nocreate_list += [True  for i in range(N, nds)]
+            if len(write_list) == 0:
+                write_list  = [True  for i in range(N)]
+                write_list += [False for i in range(N, nds)]
+                self.warning("File size is too small to send traffic to all DS's")
+
+        if write_list:
+            # Find max ds index
+            nds = 0
+            index = 0
+            for item in write_list:
+                if item:
+                    nds = index
+                index += 1
+
+        ds_index = 0
+        for ds_list in multipath_ds_list:
+            for item in ds_list:
+                if not self.layout['commit_mds']:
+                    self.writeverf = None
+
+                # Get ip address and port for DS
+                addr_list = item.na_r_addr.split('.')
+                ipaddr = '.'.join(addr_list[:4])
+                port = (int(addr_list[4])<<8) + int(addr_list[5])
+
+                # Rewind trace file to saved packet index
+                self.pktt.rewind(save_index)
+
+                if nocreate_list:
+                    nocreate = nocreate_list[ds_index]
+
+                # Verify NFSv4.1 create session to DS
+                self.verify_create_session(ipaddr, port, ds=True, nocreate=(nocreate and not newgetdev), ds_index=ds_index)
+                if self.sessionid:
+                    self.session_ids.append(self.sessionid)
+
+                # Find all I/O requests and replies for current DS
+                self.test_pattern = True
+                nio = self.verify_io(iomode, stateid, ipaddr, port, ds_index=ds_index)
+                self.dsio_list.append(nio)
+                if len(write_list) > 0:
+                    if write_list[ds_index] and not self.test_pattern:
+                        test_pattern = False
+                elif not self.test_pattern:
+                    test_pattern = False
+
+                if not self.layout['commit_mds']:
+                    # Rewind trace file to saved packet index
+                    self.pktt.rewind(save_index)
+
+                    # Verify commits
+                    self.verify_commit(ipaddr, port, self.get_filehandle(ds_index))
+
+                ds_index += 1
+
+        if len(write_list) == 0:
+            # Option is not given so expect writes to all DS's
+            write_list = [True for i in range(ds_index)]
+
+        do_write = True
+        no_write = True
+        index = 0
+        nio_total = 0
+        for nio in self.dsio_list:
+            if write_list[index] and nio == 0:
+                do_write = False
+            elif not write_list[index] and nio > 0:
+                no_write = False
+            index += 1
+            nio_total += nio
+        if nio_total == 0:
+            self.test(False, "%s should have been sent to at least one DS" % io_str)
+            return
+
+        # Get stateid messages
+        (stateid, stid_str, stid_failmsg) = self.verify_stateid(openfh, self.stateid)
+
+        self.test(do_write and no_write, "%s should only be sent to the DS with I/O" % io_str)
+        self.test(self.test_seqid,   "%s stateid seqid should be 0" % io_str)
+        self.test(self.test_stateid, "%s stateid should be the %s stateid" % (io_str, stid_str), failmsg=stid_failmsg)
+        self.test(test_pattern,      "%s data should be correct for the given DS and offset" % io_str)
+        self.test(self.test_stripe,  "%s offset and server/fh should be correct for %s layouts" % (io_str, layout_dense))
+        if max_iosize != None:
+            rsize = "rsize" if iomode == LAYOUTIOMODE4_READ else "wsize"
+            self.test(self.max_iosize <= max_iosize, "%s bytes in each packet should be less than or equal to mount option %s" % (io_str, rsize))
+        elif nmax_iosize != None:
+            rsize = "wsize" if iomode == LAYOUTIOMODE4_READ else "rsize"
+            self.test(self.max_iosize > nmax_iosize, "%s bytes in each packet should not be restricted by mount option %s" % (io_str, rsize))
+        if iomode == LAYOUTIOMODE4_RW:
+            self.test(self.test_verf, "WRITE verifier should be the same between write calls for given DS")
+
+            if self.layout['commit_mds']:
+                # Commit thru MDS
+                self.pktt.rewind(save_index)
+                self.verify_commit(self.server_ipaddr, self.port, filehandle)
+                if self.need_commit:
+                    self.test(self.test_commit_full, "COMMIT should commit full file to MDS when NFL4_UFLG_COMMIT_THRU_MDS is set")
+                    self.test(self.test_commit_verf, "COMMIT should be sent with WRITE writeverf to MDS when NFL4_UFLG_COMMIT_THRU_MDS is set")
+                else:
+                    self.test(self.test_no_commit, "COMMIT should not be sent (DATA_SYNC4 or FILE_SYNC4)")
+
+                # Make sure no COMMITs are sent to any DS
+                ds_index = 0
+                ncommits = 0
+                for ds_list in multipath_ds_list:
+                    for item in ds_list:
+                        # Get ip address and port for DS
+                        addr_list = item.na_r_addr.split('.')
+                        ipaddr = '.'.join(addr_list[:4])
+                        port = (int(addr_list[4])<<8) + int(addr_list[5])
+
+                        # Rewind trace file to saved packet index
+                        self.pktt.rewind(save_index)
+
+                        # Verify commits to DS
+                        ncommits += self.verify_commit(ipaddr, port, self.get_filehandle(ds_index))
+
+                        ds_index += 1
+
+                self.test(ncommits == 0, "COMMIT should not be sent to any DS when NFL4_UFLG_COMMIT_THRU_MDS is set")
+            else:
+                # Commit thru DS
+                if self.need_commit:
+                    self.test(self.test_commit_full, "COMMIT should commit full file for given DS")
+                    self.test(self.test_commit_verf, "COMMIT should be sent with WRITE writeverf for given DS")
+                else:
+                    self.test(self.test_no_commit, "COMMIT should not be sent (DATA_SYNC4 or FILE_SYNC4)")
+                # Make sure no COMMITs are sent to the MDS
+                self.pktt.rewind(save_index)
+                ncommits = self.verify_commit(self.server_ipaddr, self.port, filehandle)
+                self.test(ncommits == 0, "COMMIT should not be sent to MDS when NFL4_UFLG_COMMIT_THRU_MDS is not set")
+
+            # Rewind trace file to saved packet index
+            self.pktt.rewind(save_index)
+
+            # Verify LAYOUTCOMMIT
+            self.verify_layoutcommit(filehandle, filesize)
+
+    def verify_file(self, filename, iomode, **kwargs):
+        """Verify pNFS functionality for file given by filename. It checks
+           traffic to MDS (EXCHANGE_ID, CREATE_SESSION, OPEN, LAYOUTGET,
+           GETDEVICEINFO) taking into account if file has already been
+           opened before within the same session. Then it calls method
+           x.verify_pnfs_functionality() to verify pNFS functionality traffic
+           going to the data servers.
+
+           filename:
+               Verify pNFS functionality of traffic given by this file name
+           iomode:
+               Expected iomode for layoutget
+           filesize:
+               File size used to verify correct LAYOUTCOMMIT last write offset
+               and GETATTR file size [default: --filesize option]
+           multipath_ds_list:
+               List of DS's as returned by GETDEVICEINFO [default: []]
+           nolayoutget:
+               Verify that LAYOUTGET is not sent
+           nocreate:
+               Used to verify the client does not connect to MDS nor any DS
+               when set to True [default: False]
+               Option nocreate_list overwrites this value when checking DS's
+           nocreate_list:
+               List of booleans to control which DS the client does not connect.
+               Used when expecting the client to connect only to certain DS's
+               and not all [default: []]
+           write_list:
+               List of booleans to control which DS the client writes to.
+               Used when expecting write traffic only to certain DS's and
+               not all [default: []]
+           lock:
+               Find LOCK packets [default: False]
+           layout_stateid:
+               Stateid to use on LAYOUTGET [default: open/delegation stateid]
+           openfh:
+               Open information for file (filehandle, open/delegation/lock stateids,
+               and delegation type) if file has been previously opened [default: {}]
+           max_iosize:
+               Maximum number of bytes expected in each request [default: None]
+           nmax_iosize:
+               The number of bytes expected in each request should not be
+               restricted by this [default: None]
+           noclose:
+               Do not verify a CLOSE if true [default: False]
+           delegreturn:
+               Find DELEGRETURN request [default: False]
+           verify_close:
+               Verify file close [default: True]
+
+           Return a tuple (multipath_ds_list, openfh).
+        """
+        # Process named arguments
+        filesize          = kwargs.pop('filesize', self.filesize)
+        multipath_ds_list = kwargs.pop('multipath_ds_list', [])
+        nolayoutget       = kwargs.pop('nolayoutget', False)
+        nocreate          = kwargs.pop('nocreate', False)
+        nocreate_list     = kwargs.pop('nocreate_list', [])
+        write_list        = kwargs.pop('write_list', [])
+        lock              = kwargs.pop('lock', False)
+        layout_stateid    = kwargs.pop('layout_stateid', None)
+        openfh            = kwargs.pop('openfh', {})
+        max_iosize        = kwargs.pop('max_iosize', None)
+        nmax_iosize       = kwargs.pop('nmax_iosize', None)
+        noclose           = kwargs.pop('noclose', False)
+        delegreturn       = kwargs.pop('delegreturn', False)
+        verify_close      = kwargs.pop('verify_close', True)
+
+        self.session_ids = []
+
+        if not nocreate:
+            # Verify NFSv4.1 create session to MDS
+            self.verify_create_session(self.server_ipaddr, self.port)
+            if self.sessionid:
+                self.session_ids.append(self.sessionid)
+
+        # Find OPEN request
+        self.dprint('DBG2', "Find OPEN for file %s" % filename)
+        (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+        if deleg_stateid:
+            deleg_type = self.pktt.pkt.NFSop.delegation.delegation_type
+        else:
+            deleg_type = iomode
+        if 'filehandle' in openfh:
+            self.test(not filehandle, "OPEN should not be sent for the same file")
+            filehandle    = openfh['filehandle']
+            open_stateid  = openfh['open_stateid']
+            deleg_stateid = openfh['deleg_stateid']
+            deleg_type    = openfh['deleg_type']
+        else:
+            self.test(filehandle, "OPEN should be sent")
+            if filehandle:
+                openfh['filehandle']    = filehandle
+                openfh['open_stateid']  = open_stateid
+                openfh['deleg_stateid'] = deleg_stateid
+                openfh['deleg_type']    = deleg_type
+
+        lock_stateid = None
+        if lock:
+            (pktcall, pktreply) = self.find_nfs_op(OP_LOCK, self.server_ipaddr, self.port)
+            if deleg_stateid is None:
+                self.test(pktcall, "LOCK should be sent")
+                if pktcall:
+                    if pktreply:
+                        lock_stateid = pktreply.NFSop.lock_stateid.other
+                    else:
+                        self.test(False, "LOCK reply was not found")
+            else:
+                self.test(pktcall is None, "LOCK should not be sent -- delegation has been granted")
+        else:
+            lock_stateid = None
+        openfh['lock_stateid'] = lock_stateid
+
+        # Find LAYOUTGET request
+        (layoutget, layoutget_res, loc_body) = self.verify_layoutget(filehandle, iomode)
+        if nolayoutget:
+            self.test(not self.layout, "LAYOUTGET should not be sent")
+        elif 'layout' in openfh:
+            if openfh['layout']['return_on_close']:
+                self.test(self.layout, "LAYOUTGET should be sent for the same file")
+            else:
+                self.test(not self.layout, "LAYOUTGET should not be sent for the same file")
+                self.layout = openfh['layout']
+        elif self.layout:
+            openfh['layout'] = self.layout
+            # Test layoutget stateid
+            if layout_stateid is not None:
+                self.test(layoutget.loga_stateid.other == layout_stateid, "LAYOUTGET stateid should be the previous LAYOUTGET stateid")
+            elif deleg_stateid is not None and layoutget.loga_stateid.other == deleg_stateid:
+                self.test(True, "LAYOUTGET stateid should be the DELEG stateid")
+            else:
+                self.test(layoutget.loga_stateid.other == open_stateid, "LAYOUTGET stateid should be the OPEN stateid")
+        else:
+            self.test(False, "LAYOUTGET should be sent", terminate=False)
+            return (multipath_ds_list, openfh)
+
+        need_getdev = False
+        if not nolayoutget and not (self.layout['deviceid'] in self.deviceids):
+            need_getdev = True
+
+        if self.layout and not nolayoutget:
+            # Added to the list of deviceids
+            self.deviceids[self.layout['deviceid']] = True
+            # Find GETDEVICEINFO request
+            (pktcall, pktreply, dslist) = self.find_getdeviceinfo(deviceid=self.layout['deviceid'])
+
+        # Test GETDEVICEINFO for correct layout type
+        if nolayoutget:
+            # Expecting no LAYOUTGET and thus no GETDEVICEINFO
+            pass
+        elif nocreate and not need_getdev:
+            # Verify GETDEVICEINFO is not sent again
+            msg = 'the same' if 'samefile' in openfh else 'second'
+            self.test(not pktcall, "GETDEVICEINFO should not be sent for %s file" % msg)
+        else:
+            msg = ' for new deviceid' if nocreate else ''
+            self.test(pktcall, "GETDEVICEINFO should be sent%s" % msg)
+            if not pktcall:
+                devinfo = self.device_info.get(self.layout['deviceid'])
+                if devinfo:
+                    self.dprint('DBG3', "Using cached values for GETDEVICEINFO")
+                    pktcall  = devinfo['call']
+                    pktreply = devinfo['reply']
+            if pktcall:
+                xid = pktcall.rpc.xid
+                self.test(pktcall.NFSop.gdia_layout_type == LAYOUT4_NFSV4_1_FILES, "GETDEVICEINFO layout type should be LAYOUT4_NFSV4_1_FILES")
+                if getattr(self, 'ca_maxrespsz', None) is not None:
+                    self.test(pktcall.NFSop.gdia_maxcount <= self.ca_maxrespsz, "GETDEVICEINFO gdia_maxcount should be less than or equal to max_response_size in CREATE_SESSION reply")
+
+                # Find GETDEVICEINFO reply
+                if pktreply:
+                    if pktreply.nfs.status:
+                        self.test(False, "GETDEVICEINFO returned %s(%d)" % (nfsstat4[pktreply.nfs.status], pktreply.nfs.status))
+                    else:
+                        gdir_device = pktreply.NFSop.gdir_device_addr
+
+                        # Test GETDEVICEINFO reply for correct layout type
+                        self.test(gdir_device.da_layout_type == LAYOUT4_NFSV4_1_FILES, "GETDEVICEINFO reply layout type should be LAYOUT4_NFSV4_1_FILES")
+
+                        da_addr_body = gdir_device.da_addr_body
+                        self.stripe_indices = da_addr_body.nflda_stripe_indices
+                        nindices = len(self.stripe_indices)
+                        multipath_ds_list = da_addr_body.nflda_multipath_ds_list
+                else:
+                    self.test(False, "GETDEVICEINFO reply was not found")
+
+        # Save current packet index
+        save_index = self.pktt.index
+
+        if not nolayoutget:
+            self.verify_pnfs_functionality(openfh, iomode, filesize, multipath_ds_list, need_getdev, nocreate, nocreate_list, write_list, max_iosize, nmax_iosize)
+            # Rewind trace file to saved packet index
+            self.pktt.rewind(save_index)
+
+        if verify_close:
+            self.verify_close(openfh, delegreturn, noclose)
+
+        return (multipath_ds_list, openfh)
+
+    def verify_close(self, openfh, delegreturn, noclose):
+            # Save current packet index
+            save_index = self.pktt.index
+            filehandle    = openfh['filehandle']
+            open_stateid  = openfh['open_stateid']
+            deleg_stateid = openfh['deleg_stateid']
+            fhandlestr = "NFS.object == '%s'" % self.pktt.escape(filehandle)
+
+            if delegreturn:
+                # Find DELEGRETURN request
+                (pktcall, pktreply) = self.find_nfs_op(OP_DELEGRETURN, self.server_ipaddr, self.port, match=fhandlestr)
+                if pktcall:
+                    self.test(pktcall.NFSop.deleg_stateid.other == deleg_stateid, "DELEGRETURN should use the delegation stateid")
+                else:
+                    self.test(False, "DELEGRETURN should be sent")
+            elif not noclose:
+                # Find CLOSE request
+                (pktcall, pktreply) = self.find_nfs_op(OP_CLOSE, self.server_ipaddr, self.port, match=fhandlestr)
+                if pktcall:
+                    self.test(pktcall.NFSop.open_stateid.other == open_stateid, "CLOSE should use the open stateid")
+                else:
+                    self.test(False, "CLOSE should be sent")
+
+                # Find if there is a DELEGRETURN
+                self.pktt.rewind(save_index)
+                (pktcall, pktreply) = self.find_nfs_op(OP_DELEGRETURN, self.server_ipaddr, self.port, match=fhandlestr)
+                if pktcall:
+                    # Delegation has been returned
+                    self.test(pktcall.NFSop.deleg_stateid.other == deleg_stateid, "DELEGRETURN should use the delegation stateid")
+
+            # Rewind trace file to saved packet index
+            self.pktt.rewind(save_index)
+
+    def verify_destroy_session(self):
+        """Verify DESTROY_SESSION should be sent to MDS and all DS's on umount."""
+        # Find all DESTROY_SESSION requests
+        xids = []
+        save_index = self.pktt.index
+        if len(self.session_ids) == 0:
+            self.test(False, "No session ids to look for on DESTROY_SESSION")
+            return
+        while True:
+            pkt = self.pktt.match("NFS.argop == %d" % OP_DESTROY_SESSION)
+            if not pkt:
+                break
+            sessionid = pkt.NFSop.dsa_sessionid
+            if sessionid in self.session_ids:
+                self.session_ids.remove(sessionid)
+                xids.append(pkt.rpc.xid)
+
+        self.test(len(self.session_ids) == 0, "DESTROY_SESSION should be sent to MDS and all DS's on umount")
+
+        # Rewind trace file to saved packet index
+        self.pktt.rewind(save_index)
+
+        # Find all DESTROY_SESSION replies
+        while True:
+            # Find DESTROY_SESSION reply
+            pkt = self.pktt.match("NFS.resop == %d" % OP_DESTROY_SESSION)
+            if not pkt:
+                break
+            xid = pkt.rpc.xid
+            if xid in xids:
+                xids.remove(xid)
+                if len(xids) == 0:
+                    break
+
+        if len(xids) > 0:
+            self.test(False, "Could not find all replies to DESTROY_SESSION")
+
+    def nfsvers_test(self):
+        """Verify file created with pNFS is read correctly from different versions
+           of NFS. Also, verify files created with different versions of NFS are
+           read correctly from pNFS
+        """
+        if self.nii_server[:5] == 'pynfs':
+            # pyNFS does not support different versions of NFS
+            run_test = False
+            if len(self.testlist) > 1:
+                return
+        else:
+            run_test = True
+
+        self.test_group("Verify file created with pNFS is read correctly from different versions of NFS")
+        if not run_test:
+            self.test(False, "pyNFS does not support different versions of NFS")
+            return
+
+        try:
+            testfile = self.abspath(self.files[0])
+            orig_data = self.data_pattern(0, self.filesize)
+            files = []
+            vers = []
+            for version in (4, 3, 2):
+                try:
+                    self.umount()
+                    self.mount(nfsversion=version, minorversion=0)
+                except Exception as e:
+                    self.warning(str(e))
+                    continue
+
+                ver = self.str_nfs(version=version, minorversion=0)
+                vers.append(ver)
+
+                fstat = os.stat(testfile)
+                self.test(fstat.st_size == self.filesize, "Size of file on %s should be correct" % ver, failmsg=", expecting %d and got %d" % (self.filesize, fstat.st_size))
+                self.dprint('DBG3', "Read file %s @0" % testfile)
+                fd = open(testfile, "r")
+                try:
+                    data = fd.read()
+                finally:
+                    fd.close()
+                self.test(data == orig_data, "Data written using pNFS is read correctly from %s" % ver)
+
+                # Create file using current NFS version
+                self.create_file()
+                files.append(self.absfile)
+                self.umount()
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+        self.test_group("Verify files created with different versions of NFS are read correctly from pNFS")
+        try:
+            self.mount(nfsversion=4, minorversion=1)
+            index = 0
+            for testfile in files:
+                fstat = os.stat(testfile)
+                self.test(fstat.st_size == self.filesize, "Size of file on pNFS should be correct", failmsg=", expecting %d and got %d" % (self.filesize, fstat.st_size))
+                self.dprint('DBG3', "Read file %s @0" % testfile)
+                fd = open(testfile, "r")
+                try:
+                    data = fd.read()
+                finally:
+                    fd.close()
+                self.test(data == orig_data, "Data written using %s is read correctly from pNFS" % vers[index])
+                index += 1
+            self.umount()
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def verify_ds_connect_needed(self, ds_index=0):
+        """Verify client only connects to the DS with I/O by writing only
+           to the DS given by ds_index and verifying client only connects
+           to such DS.
+           Test will not be done if only one DS is available or the ds_index
+           if out of bounds.
+
+           ds_index:
+               Data server index to use for writing [default: 0]
+        """
+        run_test = True
+        ds_count = 0
+        write_list = []
+        nocreate_list = []
+        stripe_str = ['first', 'second', 'third', 'fourth']
+
+        if hasattr(self, 'dslist'):
+            for item in self.dslist:
+                ds_count += 1
+                nocreate_list.append(True)
+                write_list.append(False)
+        if ds_count < 2 or ds_count <= ds_index:
+            # Nothing to verify, server has only one DS or not enough DS's
+            run_test = False
+            if len(self.testlist) > 1:
+                return
+
+        self.test_group("Verify client only connects to the DS with I/O -- writing to %s stripe only" % stripe_str[ds_index])
+
+        try:
+            if not run_test:
+                msg = "Server does not have enough data servers" if ds_count <= ds_index else "Server has only one data server"
+                self.test(False, msg + ", unable to perform test")
+                return
+
+            if self.stripe_size is None:
+                self.test(False, "Unable to get stripe size")
+                return
+
+            self.umount()
+            self.trace_start()
+            self.mount()
+
+            # Create file on first stripe only
+            self.dprint('DBG3', "Create file on %s stripe only [stripe size: %d]" % (stripe_str[ds_index], self.stripe_size))
+            wsize = int(self.stripe_size/2)
+            offset = ds_index * self.stripe_size
+            self.create_file(offset=offset, size=wsize)
+            filesize = offset + wsize
+
+            nocreate_list[ds_index] = False
+            write_list[ds_index] = True
+
+            self.umount()
+            self.trace_stop()
+            self.trace_open()
+
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            self.verify_file(self.filename, iomode=LAYOUTIOMODE4_RW, filesize=filesize, nocreate_list=nocreate_list, write_list=write_list)
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def read_file(self, filename, msg=None):
+        """Read whole file"""
+        msg = msg if msg else "Open file [%s] for reading" % filename
+        self.dprint('DBG3', msg)
+        fd = os.open(self.abspath(filename), os.O_RDONLY)
+        try:
+            while len(os.read(fd, self.rsize)): pass
+        finally:
+            os.close(fd)
+
+    def basic_pnfs(self, write=False, swrite=False):
+        """Basic pNFS test"""
+        try:
+            wstr = "WRITE" if write else "READ"
+            self.test_group("Verify traffic for file using pNFS - %s" % wstr)
+            iomode = LAYOUTIOMODE4_RW if write else LAYOUTIOMODE4_READ
+            swstr = "WRITE" if swrite else "READ"
+            siomode = LAYOUTIOMODE4_RW if swrite else LAYOUTIOMODE4_READ
+            self.umount()
+            trace1 = self.trace_start()
+            self.mount()
+            if write:
+                # Create file
+                filename = self.create_file()
+                # Create second file on same session
+                filename2 = self.create_file()
+            else:
+                # Read file
+                filename = self.files[0]
+                self.read_file(filename)
+                # Read second file on same session
+                filename2 = self.files[1]
+                self.read_file(filename2)
+
+            trace2 = self.trace_start()
+            if swrite:
+                self.dprint('DBG3', "Open first file again on same session [%s] writing %d@%d" % (filename, self.filesize, 0))
+                fd = os.open(self.abspath(filename), os.O_WRONLY|os.O_CREAT|os.O_SYNC)
+                try:
+                    os.write(fd, self.data_pattern(0, self.filesize))
+                finally:
+                    os.close(fd)
+            elif write:
+                # Open first file again for reading only when first open was for writing
+                self.read_file(filename, msg="Open first file again on same session [%s] for reading" % filename)
+
+            self.umount()
+            self.trace_stop()
+
+            # Verify network traffic
+            self.trace_open(trace1)
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            (multipath_ds_list, openfh) = self.verify_file(filename, iomode=iomode)
+            layout = self.layout
+            session_ids = self.session_ids
+
+            self.test_group("Verify traffic for second file using pNFS within the same mount - %s" % wstr)
+            self.verify_file(filename2, iomode=iomode, nocreate=True, multipath_ds_list=multipath_ds_list)
+
+            self.trace_open(trace2)
+            if write:
+                if 'deleg_stateid' in openfh and openfh['deleg_stateid'] is not None:
+                    # Client should not send another open while holding a delegation
+                    delegreturn = True
+                else:
+                    # Client should send another open
+                    delegreturn = False
+                    openfh.pop('filehandle')
+                    openfh.pop('open_stateid')
+
+                self.test_group("Verify traffic for first file opened again using pNFS within the same mount - %s" % swstr)
+                openfh['samefile'] = True
+                self.verify_file(filename, iomode=siomode, nocreate=True, multipath_ds_list=multipath_ds_list, openfh=openfh, delegreturn=delegreturn)
+
+            self.session_ids = session_ids
+            self.verify_destroy_session()
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def do_lock(self, iomode, setattr=False):
+        """Verify traffic for locked file using pNFS."""
+        if iomode == LAYOUTIOMODE4_READ:
+            mode_str = 'READ'
+            open_type = os.O_RDONLY
+            lock_type = fcntl.F_RDLCK
+        else:
+            mode_str = 'WRITE'
+            open_type = os.O_WRONLY|os.O_CREAT|os.O_SYNC
+            lock_type = fcntl.F_WRLCK
+
+        self.umount()
+        self.trace_start()
+        self.mount()
+        filename = self.files[0]
+        absfile = self.abspath(filename)
+        self.dprint('DBG3', "Open file [%s]" % filename)
+        fd = os.open(absfile, open_type)
+
+        try:
+            self.dprint('DBG3', "Lock file (F_SETLKW)")
+            haslock = True
+            lockdata = struct.pack('hhllhh', lock_type, 0, 0, 0, 0, 0)
+            rv = fcntl.fcntl(fd, fcntl.F_SETLKW, lockdata)
+        except Exception, e:
+            self.warning("Unable to get lock on file: %r" % e)
+            haslock = False
+
+        if setattr:
+            self.dprint('DBG3', "Truncating file to 0 bytes")
+            os.ftruncate(fd, 0)
+        elif iomode == LAYOUTIOMODE4_READ:
+            self.dprint('DBG3', "Reading %d@0" % self.filesize)
+            os.read(fd, self.filesize)
+        else:
+            self.dprint('DBG3', "Writing %d@%d" % (self.filesize, 0))
+            os.write(fd, self.data_pattern(0, self.filesize))
+
+        os.close(fd)
+        self.umount()
+        self.trace_stop()
+
+        if haslock:
+            self.trace_open()
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            self.test_group("Verify traffic for locked file using pNFS - %s" % mode_str)
+            (multipath_ds_list, openfh) = self.verify_file(filename, iomode=iomode, lock=True)
+
+    def do_setattr(self, size=0, lock=False):
+        """Verify setattr traffic for file using pNFS."""
+        lock_str = "locked " if lock else ""
+        self.test_group("Verify setattr traffic for %sfile using pNFS" % lock_str)
+        self.umount()
+        self.trace_start()
+        self.mount()
+        filename = self.files[2]
+        absfile = self.abspath(filename)
+        self.dprint('DBG3', "Open file [%s]" % filename)
+        fd = os.open(absfile, os.O_WRONLY|os.O_CREAT|os.O_SYNC)
+
+        haslock = False
+        if lock:
+            try:
+                self.dprint('DBG3', "Lock file (F_SETLKW)")
+                lockdata = struct.pack('hhllhh', fcntl.F_WRLCK, 0, 0, 0, 0, 0)
+                rv = fcntl.fcntl(fd, fcntl.F_SETLKW, lockdata)
+                haslock = True
+            except Exception as e:
+                self.test(False, "Unable to get lock on file: %r" % e)
+
+        self.dprint('DBG3', "Truncating file to %d bytes" % size)
+        os.ftruncate(fd, size)
+        os.close(fd)
+        fstat = os.stat(absfile)
+        self.umount()
+        self.trace_stop()
+
+        self.trace_open()
+        self.find_getdeviceinfo()
+        self.pktt.rewind()
+        (multipath_ds_list, openfh) = self.verify_file(filename, iomode=LAYOUTIOMODE4_RW, nolayoutget=True, lock=haslock, verify_close=False)
+
+        fhandle_str = "NFS.object == '%s'" % self.pktt.escape(openfh['filehandle'])
+        (pktcall, pktreply) = self.find_nfs_op(OP_SETATTR, self.server_ipaddr, self.port, status=None, match=fhandle_str)
+        self.test(pktcall, "SETATTR should be sent to MDS")
+        if pktcall:
+            sent_stateid = pktcall.NFSop.stateid.other
+            (stateid, stid_str, stid_failmsg) = self.verify_stateid(openfh, sent_stateid)
+            self.test(sent_stateid == stateid, "SETATTR stateid should be the %s stateid" % stid_str, failmsg=stid_failmsg)
+            set_size = pktcall.NFSop.obj_attributes[4]
+            self.test(set_size == size, "SETATTR should be sent with correct size", failmsg=", expecting %d and got %d" % (size, set_size))
+        self.test(pktreply.NFSop.status == 0, "SETATTR should succeed", failmsg=", expecting status = %d and got %d" % (0, pktreply.NFSop.status))
+        if fstat:
+            self.test(fstat.st_size == size, "Size of file after SETATTR should be correct", failmsg=", expecting %d and got %d" % (size, fstat.st_size))
+        else:
+            self.test(False, "Unable to get size of file")
+
+        self.verify_close(openfh, False, False)
+
+    def read_test(self):
+        """Verify basic pNFS functionality on a couple of files opened for
+           reading within the same mount.
+        """
+        self.basic_pnfs(write=False)
+
+    def write_test(self):
+        """Verify basic pNFS functionality on a couple of files opened for
+           writing and then re-opening the first file for writing within
+           the same mount.
+        """
+        self.basic_pnfs(write=True, swrite=True)
+
+    def write_read_test(self):
+        """Verify basic pNFS functionality on a couple of files opened for
+           writing and then re-opening the first file for reading within
+           the same mount.
+        """
+        self.basic_pnfs(write=True, swrite=False)
+
+    def read_lock_test(self):
+        """Verify traffic for locked file opened for reading using pNFS."""
+        self.do_lock(LAYOUTIOMODE4_READ)
+
+    def write_lock_test(self):
+        """Verify traffic for locked file opened for writing using pNFS."""
+        self.do_lock(LAYOUTIOMODE4_RW)
+
+    def setattr_test(self):
+        """Verify setattr traffic for file using pNFS."""
+        self.do_setattr(size=self.filesize/2, lock=False)
+
+    def setattr_lock_test(self):
+        """Verify setattr traffic for locked file using pNFS."""
+        self.do_setattr(size=0, lock=True)
+
+    def rw_read_test(self):
+        """Verify traffic for file opened for read and write: reading file first."""
+        try:
+            self.umount()
+            self.trace_start()
+            self.mount()
+            filename = self.files[0]
+            self.dprint('DBG3', "Open file [%s] for both reading and writing" % filename)
+            fd = os.open(self.abspath(filename), os.O_RDWR|os.O_CREAT|os.O_SYNC)
+            try:
+                self.dprint('DBG3', "Reading file @0")
+                while len(os.read(fd, self.rsize)): pass
+
+                wsize = int(self.filesize/2)
+                self.dprint('DBG3', "Writing %d@%d" % (wsize, wsize))
+                os.lseek(fd, wsize, 0)
+                os.write(fd, self.data_pattern(wsize, wsize))
+            finally:
+                os.close(fd)
+            self.umount()
+            self.trace_stop()
+
+            self.trace_open()
+            self.test_group("Verify traffic for file opened for read and write: reading file first")
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            (multipath_ds_list, openfh) = self.verify_file(filename, iomode=LAYOUTIOMODE4_READ, noclose=True)
+
+            # Re-position trace file after the last READ call/reply
+            self.pktt.rewind()
+            while self.pktt.match("NFS.op == %d" % OP_READ):
+                pass
+
+            self.test_group("Verify traffic for file opened for read and write: writing file after read")
+            if openfh != None and openfh.get('layout') and openfh['layout']['iomode'] == LAYOUTIOMODE4_READ:
+                # Got READ layout, expect a WRITE layout
+                t_layout = openfh.pop('layout')
+                layout_stateid = t_layout['stateid']
+            else:
+                # Client should use same WRITE layout
+                layout_stateid = None
+
+            openfh['samefile'] = True
+            self.verify_file(filename, iomode=LAYOUTIOMODE4_RW, nocreate=True, multipath_ds_list=multipath_ds_list, openfh=openfh, layout_stateid=layout_stateid)
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def rw_write_test(self):
+        """Verify traffic for file opened for read and write: writing file first."""
+        try:
+            self.umount()
+            self.trace_start()
+            self.mount()
+            filename = self.files[0]
+            self.dprint('DBG3', "Open file [%s] for both reading and writing" % filename)
+            fd = os.open(self.abspath(filename), os.O_RDWR|os.O_CREAT|os.O_SYNC)
+            try:
+                wsize = int(self.filesize/2)
+                self.dprint('DBG3', "Writing %d@%d" % (wsize, wsize))
+                os.lseek(fd, wsize, 0)
+                os.write(fd, self.data_pattern(wsize, wsize))
+
+                self.dprint('DBG3', "Reading file @0")
+                os.lseek(fd, 0, 0)
+                while len(os.read(fd, self.rsize)): pass
+            finally:
+                os.close(fd)
+            self.umount()
+            self.trace_stop()
+
+            self.trace_open()
+            self.test_group("Verify traffic for file opened for read and write: writing file first")
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            (multipath_ds_list, openfh) = self.verify_file(filename, iomode=LAYOUTIOMODE4_RW, noclose=True)
+            if openfh is None:
+                return
+
+            if openfh.get('layout'):
+                # The file has not been closed, so layout still valid
+                openfh['layout']['return_on_close'] = False
+
+            # Re-position trace file after the last WRITE call/reply
+            self.pktt.rewind()
+            while self.pktt.match("NFS.op == %d" % OP_WRITE):
+                pass
+
+            self.test_group("Verify traffic for file opened for read and write: reading file after write")
+            openfh['samefile'] = True
+            self.verify_file(filename, iomode=LAYOUTIOMODE4_READ, nocreate=True, multipath_ds_list=multipath_ds_list, openfh=openfh)
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def read_holes_test(self):
+        """Verify client correctly handles read with holes."""
+        try:
+            self.test_group("Verify client correctly handles read with holes")
+            if self.stripe_size is None:
+                self.test(False, "Unable to get stripe size")
+                return
+            self.umount()
+            self.trace_start()
+            self.mount()
+            filename = self.get_filename()
+
+            # Do not use O_SYNC to avoid the client sending a LAYOUTCOMMIT before sending
+            # the READ's -- READ replies will have eof set
+            # Use O_TRUNC to force the client to ask for RW layout by truncating the file
+            self.dprint('DBG3', "Open file [%s] for both reading and writing" % self.absfile)
+            fd = os.open(self.absfile, os.O_RDWR|os.O_CREAT|os.O_TRUNC)
+            try:
+                self.dprint('DBG3', "Writing %d@%d" % (self.stripe_size, self.stripe_size))
+                os.lseek(fd, self.stripe_size, 0)
+                os.write(fd, self.data_pattern(self.stripe_size, self.stripe_size))
+                # Make sure client sends the write to server before the read
+                #os.fsync(fd) # XXX cannot flush because it will not return eof on read
+                time.sleep(5)
+
+                self.dprint('DBG3', "Reading file %d@0" % self.rsize)
+                os.lseek(fd, 0, 0)
+                data = os.read(fd, self.rsize)
+            finally:
+                os.close(fd)
+
+            self.umount()
+            self.trace_stop()
+            self.trace_open()
+
+            self.test(data == '\000' * self.rsize, "Client should read a hole at the beginning of the file after writing")
+
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+            (layoutget, layoutget_res, loc_body) = self.verify_layoutget(filehandle, LAYOUTIOMODE4_RW)
+            (pktcall, pktreply, dslist) = self.find_getdeviceinfo()
+            nds = len(dslist)
+            if self.layout is None:
+                ids0 = 0
+            else:
+                ids0 = self.layout['first_stripe_index']
+
+            if nds > 1:
+                save_index = self.pktt.index
+                ids1 = (ids0 + 1) % nds
+
+                ipaddr = dslist[ids1]['ipaddr']
+                port   = dslist[ids1]['port']
+                # Find WRITE call and reply
+                (pktcall, pktreply) = self.find_nfs_op(OP_WRITE, ipaddr, port)
+                self.test(pktreply, "Client should send a WRITE to the second DS")
+                self.pktt.rewind(save_index)
+
+                ipaddr = dslist[ids0]['ipaddr']
+                port   = dslist[ids0]['port']
+                # Find WRITE call and reply
+                (pktcall, pktreply) = self.find_nfs_op(OP_WRITE, ipaddr, port)
+                self.test(not pktreply, "Client should not send a WRITE to the first DS")
+                self.pktt.rewind(save_index)
+
+            if nds > 0:
+                # Find READ call and reply
+                ipaddr = dslist[ids0]['ipaddr']
+                port   = dslist[ids0]['port']
+                (pktcall, pktreply) = self.find_nfs_op(OP_READ, ipaddr, port)
+                self.test(pktreply, "Client should send a READ to the first DS")
+                if pktreply:
+                    self.test(pktreply.NFSop.eof and len(data) == self.rsize, "Client should ignore EOF marker in READ reply for hole")
+                    self.test(len(pktreply.NFSop.data) == 0 and len(data) == self.rsize, "Client should ignore data returned in the READ reply for hole")
+            else:
+                self.test(False, "Could not get DS list from GETDEVICEINFO")
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def one_ds_test(self):
+        """Verify client only connects to the DS with I/O."""
+        # Verify client only connects to the DS with I/O -- writing to first stripe only
+        self.verify_ds_connect_needed(ds_index=0)
+
+        # Verify client only connects to the DS with I/O -- writing to second stripe only
+        self.verify_ds_connect_needed(ds_index=1)
+
+    def verify_rwsize(self, rsize=None, wsize=None):
+        """Verify traffic for file using pNFS when mount option rsize < 4096 and/or wsize < 4096."""
+        rsize_list = []
+        mtopts = "hard,intr"
+        r_max_iosize = None
+        w_max_iosize = None
+        if rsize:
+            rsize_list.append("rsize < 4096")
+            mtopts += ",rsize=1024"
+            r_max_iosize = 1024
+        if wsize:
+            rsize_list.append("wsize < 4096")
+            mtopts += ",wsize=1024"
+            w_max_iosize = 1024
+
+        self.test_group("Verify traffic for file using pNFS when mount option %s" % " and ".join(rsize_list))
+        try:
+            self.umount()
+            self.trace_start()
+            self.mount(mtopts=mtopts)
+
+            # Read file
+            filename1 = self.files[0]
+            absfile = self.abspath(filename1)
+            self.dprint('DBG3', "Open file [%s] for reading" % absfile)
+            fd = os.open(absfile, os.O_RDONLY)
+            os.read(fd, self.filesize)
+            os.close(fd)
+
+            # Write file
+            filename2 = self.create_file()
+
+            self.umount()
+            self.trace_stop()
+
+            # Verify network traffic
+            self.trace_open()
+            self.find_getdeviceinfo()
+            self.pktt.rewind()
+            self.test_info("Verify READ traffic ========================================")
+            (multipath_ds_list, openfh) = self.verify_file(filename1, iomode=LAYOUTIOMODE4_READ, max_iosize=r_max_iosize, nmax_iosize=w_max_iosize)
+            self.test_info("Verify WRITE traffic =======================================")
+            self.verify_file(filename2, iomode=LAYOUTIOMODE4_RW, nocreate=True, multipath_ds_list=multipath_ds_list, max_iosize=w_max_iosize, nmax_iosize=r_max_iosize)
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def rsize_test(self):
+        """Verify traffic for file using pNFS when mount option rsize < 4096."""
+        self.verify_rwsize(rsize=1024)
+
+    def wsize_test(self):
+        """Verify traffic for file using pNFS when mount option wsize < 4096."""
+        self.verify_rwsize(wsize=1024)
+
+    def rwsize_test(self):
+        """Verify traffic for file using pNFS when mount option rsize < 4096 and wsize < 4096."""
+        self.verify_rwsize(rsize=1024, wsize=1024)
+
+################################################################################
+# Entry point
+NFILES = 3
+x = pNFSTest(usage=USAGE, testnames=TESTNAMES)
+
+try:
+    x.trace_start()
+    x.setup(nfiles=NFILES)
+    x.trace_stop()
+    for i in xrange(NFILES):
+        try:
+            x.trace_open()
+            (pktcall, pktreply) = x.find_exchange_id()
+            x.dprint('INFO', "Client implementation: %s" % x.nii_name)
+            x.dprint('INFO', "Server implementation: %s" % x.nii_server)
+            (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[i], x.server_ipaddr, x.port)
+            x.stripe_size = x.find_layoutget(filehandle)[2]['stripe_size']
+            x.find_getdeviceinfo()
+            break
+        except Exception as e:
+            pass
+
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    x.exit()
+

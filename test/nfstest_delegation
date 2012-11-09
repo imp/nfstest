@@ -1,0 +1,601 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2012 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import fcntl
+import struct
+import traceback
+import nfstest_config as c
+from packet.nfs.nfs4_const import *
+from nfstest.test_util import TestUtil
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2012 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> [--client <client>] [options]
+
+Delegation tests
+================
+Basic delegation tests verify that a correct delegation is granted when
+opening a file for reading or writing. Also, another OPEN should not be
+sent for the same file when the client is holding a delegation. Verify
+that the stateid of all I/O operations should be the delegation stateid.
+Reads from a different process on the same file should not cause the client
+to send additional READ packets when the client is holding a read delegation.
+Furthermore, a LOCK packet should not be sent to the server when the client
+is holding a delegation.
+
+Recall delegation tests verify the delegation is recalled when a conflicting
+operation is sent to the server from a different client. Conflicting operations
+are reading, writing and changing the permissions on the same file. Note, that
+reading a file from a different client can only recall a read delegation.
+Also, verify that a delegation is not recalled when a different client is
+granted a read delegation. After a delegation is recalled, the client should
+send an OPEN with CLAIM_DELEGATE_CUR before returning the delegation and the
+stateid should be the same as the original OPEN stateid. Also, a delegation
+should not be granted when re-opening the file right before returning
+the delegation. Verify client flushes all written data before returning
+the WRITE delegation. The LOCK should be sent as well right before returning
+a delegation which has been recalled. A delegation should not be granted
+on the second client who cause the delegation recall on the first client.
+
+Examples:
+    The only required option is --server but only the basic delegation tests
+    will be run. Use the --client option to run the recall tests as well
+    $ %prog --server 192.168.0.11 --client 192.168.0.20
+
+Notes:
+    The user id in the local host and the host specified by --client must
+    have access to run commands as root using the 'sudo' command without
+    the need for a password.
+
+    The user id must be able to 'ssh' to remote host without the need for
+    a password."""
+
+TESTNAMES = [
+    'read',
+    'write',
+    'read_lock',
+    'write_lock',
+    'read_recall_write',
+    'write_recall_write',
+    'read_recall_write_lock',
+    'write_recall_write_lock',
+    'write_recall_read',
+    'write_recall_read_lock',
+    'read_recall_setattr',
+    'write_recall_setattr',
+    'read_recall_setattr_lock',
+    'write_recall_setattr_lock',
+]
+
+PATTERN = 'FF00'
+
+def open_mode(deleg_type):
+    """Open mode according to delegation type."""
+    if deleg_type == OPEN_DELEGATE_READ:
+        return os.O_RDONLY
+    else:
+        return os.O_WRONLY|os.O_CREAT
+
+def open_mode_str(deleg_type):
+    """String representation for open mode according to delegation type."""
+    if deleg_type == OPEN_DELEGATE_READ:
+        return 'READ'
+    else:
+        return 'WRITE'
+
+class DelegTest(TestUtil):
+    """DelegTest object
+
+       DelegTest() -> New test object
+
+       Usage:
+           x = DelegTest(testnames=['basic', 'basic_lock', ...])
+
+           # Run all the tests
+           x.run_tests(deleg=deleg_mode)
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        self.opts.add_option("--client", default=None, help="Remote NFS client that mounts server used for multiple client tests")
+        self.opts.add_option("--lock-offset", type="int", default=0, help="Starting offset for lock [default: %default]")
+        self.opts.add_option("--lock-len", type="int", default=0, help="Number of bytes to lock [default: %default]")
+        self.scan_options()
+
+        if self.client != None:
+            self.create_host(self.client)
+        else:
+            self.clientobj = None
+
+    def lock_file(self, fd, lock_type):
+        """Lock file given by the file descriptor.
+
+           fd:
+               Opened file descriptor of file
+           lock_type:
+               Lock type 
+        """
+        lock_type = fcntl.F_RDLCK if lock_type == OPEN_DELEGATE_READ else fcntl.F_WRLCK
+        try:
+            self.dprint('DBG3', "Lock file (F_SETLKW) start=%d len=%d" % (self.lock_offset, self.lock_len))
+            lockdata = struct.pack('hhllhh', lock_type, 0, self.lock_offset, self.lock_len, 0, 0)
+            rv = fcntl.fcntl(fd, fcntl.F_SETLKW, lockdata)
+        except Exception as e:
+            self.warning("Unable to get a lock on file: %r" % e)
+
+    def open_file(self, file, deleg_type, lock=False, pid=None, msg=''):
+        """Open file, lock it and do some I/O on the file.
+           Return the file descriptor of the opened file.
+
+           file:
+               File name to open
+           deleg_type:
+               Delegation type to get
+           lock:
+               Get a lock on the file if true [default: False]
+           pid:
+               Process ID to differentiate between different processes [default: None]
+           msg:
+               Message to append on debug message [default: '']
+        """
+        pidstr = " from a different process [pid: %d]" % pid if pid else ""
+        msg = msg if len(msg) == 0 else " %s" % msg
+        self.dprint('DBG3', "Open file for %s [%s]%s%s" % (open_mode_str(deleg_type), file, pidstr, msg))
+        fd = os.open(file, open_mode(deleg_type))
+
+        if lock:
+            self.lock_file(fd, deleg_type)
+
+        # Read/Write file
+        if deleg_type == OPEN_DELEGATE_READ:
+            os.read(fd, self.rsize)
+        else:
+            os.write(fd, self.data_pattern(0, self.wsize, PATTERN))
+        self.delay_io()
+        return fd
+
+    def get_deleg_remote(self):
+        """Get a read delegation on the remote client."""
+        cmd = "python -c \"fdko = open('%s', 'r')\n" % self.abspath(self.files[0])
+        cmd += "fd = open('%s', 'r')\n" % self.absfile
+        cmd += "fd.read()\n"
+        cmd += "fd.close()\n"
+        cmd += "fdko.close()\""
+        return self.clientobj.run_cmd(cmd)
+
+    def setup_test(self, deleg_type):
+        """Setup test by mounting server and hold open a file so that the open
+           owner sticks around so a delegation is granted on next open using
+           the same open owner -- this is done to avoid a bug on the client
+           where open owner is reaped at close
+        """
+        if self.clientobj != None:
+            # Unmount server on remote client
+            self.clientobj.umount()
+
+            # Mount server on remote client
+            self.clientobj.mount()
+
+        self.umount()
+        self.trace_start()
+        self.mount()
+
+        if deleg_type == OPEN_DELEGATE_READ:
+            # Use existing file
+            self.filename = self.files[1]
+            self.absfile = self.abspath(self.filename)
+        else:
+            # Create new file
+            self.filename = self.get_filename()
+            self.absfile = self.absfile
+
+        # Hold a file open so that the open owner sticks around
+        # (bug on the client where OO's are reaped at close)
+        self.dprint('DBG3', "Open file %s so open owner sticks around" % self.abspath(self.files[0]))
+        self.fdko = open(self.abspath(self.files[0]), 'r')
+
+    def verify_io_requests(self, iomode, deleg_stid, filehandles, src_ipaddr=None, maxindex=None):
+        """Verify I/O is sent to the correct server."""
+        nio = 0
+        dsindex = 0
+        for fh in filehandles:
+            if self.dslist:
+                ds = self.dslist[dsindex]
+                ipaddr = ds['ipaddr']
+                port = ds['port']
+            else:
+                ipaddr = self.server_ipaddr
+                port = self.port
+            nio += self.verify_io(iomode, deleg_stid, ipaddr, port, filehandle=fh, src_ipaddr=src_ipaddr, maxindex=maxindex, pattern=PATTERN)
+            dsindex += 1
+        return nio
+
+    def basic_deleg_test(self, deleg_type, lock=False):
+        """Basic delegation tests"""
+        try:
+            fds = []
+            self.fdko = None
+            mode_str = open_mode_str(deleg_type)
+            lock_str = " with file lock" if lock else ""
+            self.test_group("Basic %s delegation tests%s" % (mode_str, lock_str))
+            self.setup_test(deleg_type)
+
+            # Open file, should get a DELEGATION
+            fds.append(self.open_file(self.absfile, deleg_type, lock=lock))
+
+            # Open same file on same process for reading
+            fds.append(self.open_file(self.absfile, OPEN_DELEGATE_READ, msg="on same process"))
+
+            if deleg_type == OPEN_DELEGATE_WRITE:
+                # Open same file on same process for writing
+                fds.append(self.open_file(self.absfile, deleg_type, msg="on same process"))
+
+            # Access file from a different process
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    ret = 1
+                    # Open same file on different process for reading
+                    fd = self.open_file(self.absfile, OPEN_DELEGATE_READ, pid=os.getpid())
+                    os.close(fd)
+                    ret = 0
+                finally:
+                    os._exit(ret)
+            (pid, out) = os.waitpid(pid, 0)
+            if out:
+               raise Exception("Unable to read file from a different process [pid: %d]" % pid)
+
+            if deleg_type == OPEN_DELEGATE_WRITE:
+                pid = os.fork()
+                if pid == 0:
+                    try:
+                        ret = 1
+                        # Open same file on different process for writing
+                        fd = self.open_file(self.absfile, deleg_type, pid=os.getpid())
+                        os.close(fd)
+                        ret = 0
+                    finally:
+                        os._exit(ret)
+                (pid, out) = os.waitpid(pid, 0)
+                if out:
+                   raise Exception("Unable to write file from a different process [pid: %d]" % pid)
+        except Exception:
+            self.test(False, traceback.format_exc())
+            return
+        finally:
+            if self.fdko:
+                # Close open owner file
+                self.fdko.close()
+            # Close open files
+            for fd in fds:
+                os.close(fd)
+            self.umount()
+            if self.clientobj != None:
+                self.clientobj.umount()
+            self.trace_stop()
+
+        try:
+            self.trace_open()
+
+            (fh, op_stid, deleg_stid) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_type)
+            self.test(deleg_stid != None, "%s delegation should be granted" % mode_str)
+            save_index = self.pktt.index
+            if deleg_stid is None:
+                # Delegation was not granted
+                return
+
+            filehandles = [fh]
+            (layoutget, layoutget_res, loc_body) = self.find_layoutget(fh)
+            (devcall, devreply, dslist) = self.find_getdeviceinfo()
+            self.pktt.rewind(save_index)
+            if loc_body:
+                filehandles = loc_body['filehandles']
+
+            # Find any other OPEN's for the same file
+            olist = self.find_open(self.filename, self.server_ipaddr, self.port)
+            self.test(olist[0] is None, "OPEN's should not be sent for the same file")
+
+            # Rewind trace file to saved packet index
+            self.pktt.rewind(save_index)
+            nio = self.verify_io_requests(deleg_type, deleg_stid, filehandles, src_ipaddr=self.client_ipaddr)
+            if nio > 0:
+                self.test(self.test_stateid, "%s stateid should be the DELEG stateid" % mode_str)
+                if deleg_type == OPEN_DELEGATE_READ:
+                    unique_io_list = sorted(set(self.test_offsets))
+                    self.test(len(self.test_offsets) == len(unique_io_list), "%s's should not be sent when reading delegated file from a different process" % mode_str)
+
+            # Rewind trace file to saved packet index
+            self.pktt.rewind(save_index)
+            if deleg_type == OPEN_DELEGATE_WRITE:
+                nio = self.verify_io_requests(OPEN_DELEGATE_READ, deleg_stid, filehandles, src_ipaddr=self.client_ipaddr)
+                #self.test(nio == 0, "READ's should not be sent to the server")
+
+            if lock:
+                # Rewind trace file
+                self.pktt.rewind()
+                (lockcall, lockreply) = self.find_nfs_op(OP_LOCK, self.server_ipaddr, self.port, src_ipaddr=self.client_ipaddr)
+                self.test(lockcall is None, "LOCK should not be sent to the server")
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def recall_deleg_test(self, deleg_type, conflict_type=None, lock=False):
+        """Delegation recall tests"""
+        if self.clientobj is None:
+            return
+        if deleg_type == OPEN_DELEGATE_READ and conflict_type == OPEN_DELEGATE_READ:
+            return
+        try:
+            fd = None
+            self.fdko = None
+            mode_str = open_mode_str(deleg_type)
+            if conflict_type is None:
+                # Conflict OPEN type for both READ and WRITE
+                conflict_type = OPEN_DELEGATE_WRITE
+            if conflict_type == OP_SETATTR:
+                conflict_str = "SETATTR (chmod)"
+                conflict_op = OP_SETATTR
+            else:
+                conflict_str = "OPEN (%s)" % open_mode_str(conflict_type)
+                conflict_op = OP_OPEN
+            lock_str = " with file lock" if lock else ""
+            self.test_group("%s delegation recall tests%s -- recall with %s" % (mode_str, lock_str, conflict_str))
+
+            self.setup_test(deleg_type)
+
+            # Open file, should get a DELEGATION
+            self.dprint('DBG3', "Open file for %s [%s]" % (open_mode_str(deleg_type), self.absfile))
+            fd = os.open(self.absfile, open_mode(deleg_type))
+
+            if lock:
+                self.lock_file(fd, deleg_type)
+
+            iosize = int(self.filesize/2)
+
+            # Read/Write file
+            if deleg_type == OPEN_DELEGATE_READ:
+                os.read(fd, iosize)
+            else:
+                os.write(fd, self.data_pattern(0, iosize, PATTERN))
+            self.delay_io()
+
+            # Read same file from another client -- delegation should not be
+            # recalled and delegation should be granted
+            if deleg_type == OPEN_DELEGATE_READ:
+                # Other READ opens will not recall the delegation
+                self.get_deleg_remote()
+
+            if conflict_type == OP_SETATTR:
+                # Change the permissions on the file from another client to recall delegation
+                self.clientobj.run_cmd('chmod 777 %s' % self.absfile)
+            elif conflict_type == OPEN_DELEGATE_READ:
+                # Read to same file from another client to recall delegation
+                self.clientobj.run_cmd('cat %s' % self.absfile)
+            else:
+                # Write to same file from another client to recall delegation
+                self.clientobj.run_cmd('echo -n %s >> %s' % (self.data_pattern(0, 32, 'F'), self.absfile))
+
+            # Read/Write file
+            if deleg_type == OPEN_DELEGATE_READ:
+                os.read(fd, iosize)
+            else:
+                os.write(fd, self.data_pattern(iosize, iosize, PATTERN))
+            self.delay_io()
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                # Close file
+                os.close(fd)
+            if self.fdko:
+                # Close open owner file
+                self.fdko.close()
+            self.umount()
+            if self.clientobj:
+                self.clientobj.umount()
+            self.trace_stop()
+
+        try:
+            self.trace_open()
+            (fh, op_stid, deleg_stid) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_type, src_ipaddr=self.client_ipaddr)
+            self.test(deleg_stid != None, "%s delegation should be granted" % mode_str)
+            save_index = self.pktt.index
+            if deleg_stid is None:
+                # Delegation was not granted
+                return
+
+            filehandles = [fh]
+            (layoutget, layoutget_res, loc_body) = self.find_layoutget(fh)
+            (devcall, devreply, dslist) = self.find_getdeviceinfo()
+            self.pktt.rewind(save_index)
+            if loc_body:
+                filehandles = loc_body['filehandles']
+
+            if deleg_type == OPEN_DELEGATE_READ:
+                # Find OPEN (READ) call from the second client
+                (fh1, op_stid1, deleg_stid1) = self.find_open(self.filename, self.server_ipaddr, self.port, src_ipaddr=self.clientobj.ipaddr)
+                save_index = self.pktt.index
+
+            # Find OPEN call from the second client
+            src_other_client_str = self.pktt.ip_tcp_dst_expr(self.server_ipaddr, self.port) + " and IP.src == '%s' and " % self.clientobj.ipaddr
+            conflict_match_str = src_other_client_str + "NFS.argop == %d" % conflict_op
+            if conflict_op == OP_OPEN:
+                conflict_match_str += " and NFS.claim.file == '%s'" % self.filename
+            opencall = self.pktt.match(conflict_match_str)
+            if opencall is None:
+                self.test(False, "%s should be sent from second client" % conflict_str)
+                return
+            conflict_index = self.pktt.index
+
+            if deleg_type == OPEN_DELEGATE_READ:
+                self.pktt.rewind(save_index)
+                # Verify no CB_RECALL is sent to client under test
+                (cbcall, cbreply) = self.find_nfs_op(OP_CB_RECALL, self.client_ipaddr, src_ipaddr=self.server_ipaddr, maxindex=conflict_index)
+                self.test(cbcall is None, "CB_RECALL should not be sent to the client after a READ OPEN is received from a second client")
+                if deleg_stid1 != None:
+                    self.test(cbcall is None, "CB_RECALL should not be sent to the client after a second client is granted a READ delegation")
+                self.pktt.rewind(conflict_index)
+
+            if lock:
+                self.pktt.rewind(save_index)
+                # Verify no CB_RECALL is sent to client under test
+                (cbcall, cbreply) = self.find_nfs_op(OP_CB_RECALL, self.client_ipaddr, src_ipaddr=self.server_ipaddr, maxindex=conflict_index)
+                self.test(cbcall is None, "%s delegation should not be recalled after locking the file" % mode_str)
+
+                (lockcall, lockreply) = self.find_nfs_op(OP_LOCK, self.server_ipaddr, self.port, src_ipaddr=self.client_ipaddr, maxindex=conflict_index)
+                self.test(lockcall is None, "LOCK should not be sent to the server when holding a %s delegation on the file" % mode_str)
+                self.pktt.rewind(conflict_index)
+
+            self.test(opencall != None, "%s should be sent from second client" % conflict_str)
+
+            # Find CB_RECALL sent to client under test
+            (cbcall, cbreply) = self.find_nfs_op(OP_CB_RECALL, self.client_ipaddr, src_ipaddr=self.server_ipaddr)
+            self.test(cbcall != None, "CB_RECALL should be sent to the client after a conflicting %s is received from a second client" % conflict_str)
+            if cbcall is None:
+                return
+            cbrecall_index = self.pktt.index
+            self.test(cbcall.NFSop.stateid.other == deleg_stid, "CB_RECALL should recall %s delegation granted to client" % mode_str)
+
+            # Find OPEN sent from the client right before returning the delegation
+            (fh, op_stid2, deleg_stid2) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_stateid=deleg_stid, src_ipaddr=self.client_ipaddr)
+            open_index = self.pktt.index
+            self.test(op_stid2 != None, "OPEN with CLAIM_DELEGATE_CUR is sent from client right before returning the %s delegation after CB_RECALL" % mode_str)
+            self.test(op_stid2 == op_stid, "OPEN stateid should be the same as the original OPEN stateid")
+            self.test(deleg_stid2 is None, "Delegation should not be granted when re-opening the file right before returning the %s delegation after CB_RECALL" % mode_str)
+
+            if deleg_type == OPEN_DELEGATE_WRITE:
+                self.pktt.rewind(cbrecall_index)
+                # Find the WRITE's before DELEGRETURN
+                nio = self.verify_io_requests(deleg_type, deleg_stid, filehandles, src_ipaddr=self.client_ipaddr, maxindex=open_index)
+                self.test(nio > 0, "Client flushes written data before returning the WRITE delegation")
+                self.pktt.rewind(open_index)
+
+            # Find DELEGRETURN request and reply
+            (delegreturncall, delegreturnreply) = self.find_nfs_op(OP_DELEGRETURN, self.server_ipaddr, self.port, src_ipaddr=self.client_ipaddr)
+            #XXX check if delegreturn is found
+            delegreturn_index = delegreturncall.record.index
+
+            if lock:
+                self.pktt.rewind(open_index)
+                # Find the LOCK before DELEGRETURN
+                (lockcall, lockreply) = self.find_nfs_op(OP_LOCK, self.server_ipaddr, self.port, src_ipaddr=self.client_ipaddr, maxindex=delegreturn_index)
+                self.test(lockcall != None, "LOCK is sent to the server right before returning the %s delegation" % mode_str)
+
+            self.test(delegreturncall != None, "DELEGRETURN should be sent from client right after re-opening the file")
+            self.test(delegreturncall.NFSop.deleg_stateid.other == deleg_stid, "DELEGRETURN should return the %s delegation being recalled" % mode_str)
+
+            # Make OPEN reply from the second client has not been sent with NFS4ERR_DELAY
+            xid = opencall.rpc.xid
+            self.pktt.rewind(conflict_index)
+            reply = self.pktt.match("RPC.xid == %d and NFS.status == %d" % (xid, NFS4ERR_DELAY), maxindex=delegreturn_index)
+            self.pktt.rewind(delegreturn_index)
+
+            if reply != None:
+                # Find OPEN call from the second client after NFS4ERR_DELAY
+                opencall = self.pktt.match(conflict_match_str)
+                if opencall is None:
+                    self.test(False, "%s call from the second client was not found" % conflict_str)
+                    return
+
+            # Find OPEN reply from the second client
+            xid = opencall.rpc.xid
+            openreply = self.pktt.match("RPC.xid == %d and NFS.resop == %d" % (xid, conflict_op))
+            self.test(openreply != None, "%s reply should be sent to the second client after the %s delegation has been returned" % (conflict_str, mode_str))
+            if openreply is None:
+                return
+            if conflict_op == OP_OPEN:
+                self.test(openreply.NFSop.delegation.delegation_type == OPEN_DELEGATE_NONE, "Delegation should not be granted for the second client")
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def read_test(self):
+        """Basic read delegation test"""
+        self.basic_deleg_test(OPEN_DELEGATE_READ)
+
+    def write_test(self):
+        """Basic write delegation test"""
+        self.basic_deleg_test(OPEN_DELEGATE_WRITE)
+
+    def read_lock_test(self):
+        """Basic read delegation test with file lock"""
+        self.basic_deleg_test(OPEN_DELEGATE_READ, lock=True)
+
+    def write_lock_test(self):
+        """Basic write delegation test with file lock"""
+        self.basic_deleg_test(OPEN_DELEGATE_WRITE, lock=True)
+
+    def read_recall_write_test(self):
+        """Recall read delegation by writing from a second client"""
+        self.recall_deleg_test(OPEN_DELEGATE_READ)
+
+    def write_recall_write_test(self):
+        """Recall write delegation by writing from a second client"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE)
+
+    def read_recall_write_lock_test(self):
+        """Recall read delegation by writing from a second client with file lock"""
+        self.recall_deleg_test(OPEN_DELEGATE_READ, lock=True)
+
+    def write_recall_write_lock_test(self):
+        """Recall write delegation by writing from a second client with file lock"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE, lock=True)
+
+    def write_recall_read_test(self):
+        """Recall write delegation by reading from a second client"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE, conflict_type=OPEN_DELEGATE_READ)
+
+    def write_recall_read_lock_test(self):
+        """Recall write delegation by reading from a second client with file lock"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE, conflict_type=OPEN_DELEGATE_READ, lock=True)
+
+    def read_recall_setattr_test(self):
+        """Recall read delegation by changing the permissions to the file"""
+        self.recall_deleg_test(OPEN_DELEGATE_READ, conflict_type=OP_SETATTR)
+
+    def write_recall_setattr_test(self):
+        """Recall write delegation by changing the permissions to the file"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE, conflict_type=OP_SETATTR)
+
+    def read_recall_setattr_lock_test(self):
+        """Recall read delegation by changing the permissions to the file with file lock"""
+        self.recall_deleg_test(OPEN_DELEGATE_READ, conflict_type=OP_SETATTR, lock=True)
+
+    def write_recall_setattr_lock_test(self):
+        """Recall write delegation by changing the permissions to the file with file lock"""
+        self.recall_deleg_test(OPEN_DELEGATE_WRITE, conflict_type=OP_SETATTR, lock=True)
+
+################################################################################
+#  Entry point
+x = DelegTest(usage=USAGE, testnames=TESTNAMES)
+x.setup(nfiles=2)
+
+try:
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    if x.clientobj != None:
+        # Unmount server on remote client
+        x.clientobj.umount()
+    x.exit()

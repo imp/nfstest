@@ -1,0 +1,1508 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2012 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import posix
+import ctypes
+import traceback
+import nfstest_config as c
+from packet.nfs.nfs4_const import *
+from nfstest.test_util import TestUtil
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2012 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> [options]
+
+Direct I/O tests
+================
+Functional direct I/O tests verify that every READ/WRITE is sent to the server
+instead of the client caching the requests. Client bypasses read ahead by
+sending the READ with only the requested bytes. Verify the client correctly
+handles eof marker when reading the whole file. Verify client ignores delegation
+while writing a file.
+
+Direct I/O on pNFS tests verify the client sends the READ/WRITE to the correct
+DS or the MDS if using a PAGESIZE aligned buffer or not, respectively.
+
+Direct I/O data correctness tests verify that a file written with buffered I/O
+is read correctly with direct I/O. Verify that a file written with direct I/O
+is read correctly with buffered I/O.
+
+Vectored I/O tests verify coalescence of multiple vectors into one READ/WRITE
+packet when all vectors are PAGESIZE aligned. Vectors with different alignments
+are sent on separate packets.
+
+Valid for NFSv4.0 and NFSv4.1 including pNFS.
+
+Examples:
+    The only required option is --server
+    $ %prog --server 192.168.0.11
+
+Notes:
+    The user id in the local host must have access to run commands as root
+    using the 'sudo' command without the need for a password."""
+
+TESTNAMES = [
+    'eof',
+    'correctness',
+    'fstat',
+    'read',
+    'read_ahead',
+    'basic',
+    'rsize',
+    'wsize',
+    'aligned',
+    'nonaligned',
+    'diffalign',
+    'stripesize',
+    'vectored_io',
+]
+
+# Constants
+MDS = 0
+DS  = 1
+SERVER = 2
+mds_map = {
+       MDS: 'MDS',
+        DS: 'DS',
+    SERVER: 'server',
+}
+
+class iovec(ctypes.Structure):
+    """
+       struct iovec {
+           void  *iov_base;    /* Starting address */
+           size_t iov_len;     /* Number of bytes to transfer */
+       };
+    """
+    _fields_ = [
+        ("iov_base", ctypes.c_void_p),
+        ("iov_len",  ctypes.c_ulong),
+    ]
+
+class DioTest(TestUtil):
+    """DioTest object
+
+       DioTest() -> New test object
+
+       Usage:
+           x = DioTest()
+
+           # Verify the client correctly handles eof marker when reading
+           # the end of the file
+           x.verify_eof()
+
+           # Verify client sends a READ request after writing when the file
+           # is open for both read and write
+           x.verify_read()
+
+           # Verify basic direct I/O functionality
+           x.verify_basic_dio(write=True)
+
+           # Vectored I/O test
+           tinfo = [
+               {'size':4096, 'aligned':True,  'server':MDS},
+               {'size':4096, 'aligned':True},
+               {'size':4096, 'aligned':True},
+           ]
+           x.vectored_io(tinfo)
+
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        self.opts.set_defaults(filesize=262144)
+        self.opts.set_defaults(mtopts="hard,intr")
+        self.opts.add_option("--iotype", default='read,write', help="List of I/O types to test [default: '%default']")
+        self.opts.add_option("--biotype", default='none,read,write', help="List of buffered I/O types to test [default: '%default']")
+        self.opts.add_option("--withdeleg", default='false,true', help="Use delegation on tests [default: both without and with delegation]")
+        self.scan_options()
+        if self.nfsversion != 4:
+            self.config("Option nfsversion must be 4")
+
+        # Process --iotype option
+        self.io_list = self.get_list(self.iotype, {'read':False, 'write':True})
+        if self.io_list is None:
+            self.opts.error("invalid type given in --iotype [%s]" % self.iotype)
+
+        # Process --biotype option
+        self.bio_list = self.get_list(self.biotype, {'none':None, 'read':False, 'write':True})
+        if self.bio_list is None:
+            self.opts.error("invalid type given in --biotype [%s]" % self.biotype)
+
+        # Process --withdeleg option
+        self.deleg_list = self.get_list(self.withdeleg, {'false':False, 'true':True})
+        if self.deleg_list is None:
+            self.opts.error("invalid type given in --withdeleg [%s]" % self.withdeleg)
+
+        self.fbuffers = []
+        self.PAGESIZE = os.sysconf(os.sysconf_names['SC_PAGESIZE'])
+
+        # Load share library for calling C library functions
+        self.libc = ctypes.CDLL('libc.so.6')
+        self.libc.malloc.argtypes = [ctypes.c_long]
+        self.libc.malloc.restype = ctypes.c_void_p
+        self.libc.posix_memalign.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_long, ctypes.c_long]
+        self.libc.posix_memalign.restype = ctypes.c_int
+        self.libc.read.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_long]
+        self.libc.read.restype = ctypes.c_int
+        self.libc.write.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_long]
+        self.libc.write.restype = ctypes.c_int
+        self.libc.lseek.argtypes = [ctypes.c_int, ctypes.c_long, ctypes.c_int]
+        self.libc.lseek.restype = ctypes.c_long
+        self.libc.memcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
+        self.libc.memcpy.restype = ctypes.c_void_p
+        self.libc.readv.argtypes = [ctypes.c_int, ctypes.POINTER(iovec), ctypes.c_int]
+        self.libc.readv.restype = ctypes.c_ulong
+        self.libc.writev.argtypes = [ctypes.c_int, ctypes.POINTER(iovec), ctypes.c_int]
+        self.libc.writev.restype = ctypes.c_ulong
+
+        self.bsize = self.rsize if self.rsize > self.wsize else self.wsize
+
+    def mem_alloc(self, size, aligned=True, fill=False, offset=0):
+        """Allocate buffer.
+
+           size:
+               Number of bytes to allocate
+           aligned:
+               Aligned buffer on a PAGESIZE boundary if true [default: True]
+           fill:
+               Fill buffer with a predetermined pattern
+           offset:
+               Offset used in creating fill data
+
+           Return allocated buffer.
+
+           See also free_buffers()
+        """
+        align_str = ""
+        buffer = None
+        if aligned:
+            # Allocate aligned buffer
+            buffer = ctypes.c_void_p()
+            self.libc.posix_memalign(ctypes.byref(buffer), self.PAGESIZE, size)
+        else:
+            # Make sure the buffer is not aligned
+            align_str = "non-"
+            buffers = []
+            for i in xrange(30):
+                buffers.append(ctypes.c_void_p())
+                buffers[-1].value = self.libc.malloc(size)
+                if buffers[-1].value & (self.PAGESIZE-1) != 0:
+                    # Found non-aligned buffer
+                    buffer = buffers.pop()
+                    break
+
+            for buf in buffers:
+                # Free all unused buffers
+                self.libc.free(buf)
+
+            if buffer is None:
+                raise Exception("Could not allocate %saligned buffer" % align_str)
+
+        self.dprint('DBG7', "Allocated %saligned buffer of %d bytes @ 0x%x" % (align_str, size, buffer.value))
+        # Save allocated buffer so it can be freed by free_buffers()
+        self.fbuffers.append(buffer)
+        if fill:
+            # Fill buffer
+            data = self.data_pattern(offset, size)
+            pdata = ctypes.create_string_buffer(data)
+            self.libc.memcpy(buffer, pdata, size);
+        return buffer
+
+    def alloc_buffers(self, **kwargs):
+        """Allocate buffers used by do_read and do_write."""
+        size = kwargs.pop('size', 2*self.bsize)
+        # Make sure the buffer is not aligned
+        self.nonaligned_buffer = self.mem_alloc(size, aligned=False)
+        # Allocate aligned buffer
+        self.aligned_buffer = self.mem_alloc(size, aligned=True)
+
+    def free_buffers(self):
+        """Free all allocated buffers created by mem_alloc()."""
+        try:
+            if len(self.fbuffers):
+                self.dprint('DBG7', "Freeing allocated buffers")
+                while len(self.fbuffers):
+                    if self.fbuffers[0] != None:
+                        self.dprint('DBG7', "    Freeing allocated buffer 0x%x" % self.fbuffers[0].value)
+                        self.libc.free(self.fbuffers[0])
+                    # Remove buffer from list so this function can be called
+                    # multiple times
+                    self.fbuffers.pop(0)
+        except Exception:
+            pass
+
+    def do_read(self, fd, offset, size, aligned=True, delay=None):
+        """Wrapper for system call read().
+
+           fd:
+               File descriptor returned from open() system call
+           offset:
+               Start reading at this file position
+           size:
+               Number of bytes to read
+           aligned:
+               Use aligned buffer if true [default: True]
+           delay:
+               Delay read in seconds [default: no delay]
+
+           Return data read.
+        """
+        buffer = self.aligned_buffer if aligned else self.nonaligned_buffer
+        self.dprint('DBG3', "Read file %d@%d" % (size, offset))
+        self.libc.lseek(fd, offset, 0)
+        count = self.libc.read(fd, buffer, size)
+        self.dprint('DBG3', "Read returned %d bytes" % count)
+        data = ctypes.string_at(buffer, count)
+        # Slow down traffic for tcpdump to capture all packets
+        self.delay_io(delay)
+        return data
+
+    def do_write(self, fd, offset, size, aligned=True, delay=None):
+        """Wrapper for system call write().
+
+           fd:
+               File descriptor returned from open() system call
+           offset:
+               Start writing at this file position
+           size:
+               Number of bytes to write
+           aligned:
+               Use aligned buffer if true [default: True]
+           delay:
+               Delay write in seconds [default: no delay]
+
+           Return number of bytes written.
+        """
+        buffer = self.aligned_buffer if aligned else self.nonaligned_buffer
+        data = self.data_pattern(offset, size)
+        pdata = ctypes.create_string_buffer(data)
+        self.libc.memcpy(buffer, pdata, size);
+        self.dprint('DBG3', "Write file %d@%d" % (size, offset))
+        self.libc.lseek(fd, offset, 0)
+        count = self.libc.write(fd, buffer, size)
+        self.dprint('DBG3', "Write returned %d bytes" % count)
+        # Slow down traffic for tcpdump to capture all packets
+        self.delay_io(delay)
+        return count
+
+    def _get_info(self, direct=True):
+        """Return tuple (O_DIRECT, ' (O_DIRECT)') if direct option is true,
+           (0, '') otherwise.
+        """
+        if direct:
+            info = " (O_DIRECT)"
+            open_args = posix.O_DIRECT
+        else:
+            info = ""
+            open_args = 0
+        return (open_args, info)
+
+    def read_file(self, file, direct=True, aligned=True, delay=None):
+        """Read file and compare read data with known data pattern.
+
+           file:
+               File to read
+           direct:
+               Open file using O_DIRECT if true [default: True]
+           aligned:
+               Use aligned buffer if true [default: True]
+           delay:
+               Delay each read in seconds [default: no delay]
+
+           Return total number of bytes read.
+        """
+        (open_args, info) = self._get_info(direct)
+        self.dprint('DBG3', "Open file %s for reading%s" % (file, info))
+        fd = posix.open(file, posix.O_RDONLY|open_args)
+        try:
+            offset = 0
+            while True:
+                data = self.do_read(fd, offset, self.rsize, aligned=aligned, delay=delay)
+                count = len(data)
+                cdata = self.data_pattern(offset, count)
+                if count == 0 or data != cdata:
+                    break
+                offset += count
+        finally:
+            posix.close(fd)
+        return offset
+
+    def write_file(self, file, direct=True, aligned=True, delay=None):
+        """Write file with known data pattern.
+
+           file:
+               File to write
+           direct:
+               Open file using O_DIRECT if true [default: True]
+           aligned:
+               Use aligned buffer if true [default: True]
+           delay:
+               Delay each write in seconds [default: no delay]
+
+           Return total number of bytes written.
+        """
+        (open_args, info) = self._get_info(direct)
+        self.dprint('DBG3', "Open file %s for writing%s" % (file, info))
+        fd = posix.open(file, posix.O_WRONLY|posix.O_CREAT|open_args, 0644)
+        offset = 0
+        while offset < self.filesize:
+            count = self.filesize - offset
+            if count > self.wsize:
+                count = self.wsize
+            count = self.do_write(fd, offset, self.wsize, delay=delay)
+            offset += count
+        posix.close(fd)
+        return offset
+
+    def verify_eof(self, aligned=True):
+        """Verify eof marker is handled correctly when reading the end
+           of the file.
+
+           aligned:
+               Use aligned buffer on read() if true [default: True]
+        """
+        try:
+            fd = None
+            align_str = "" if aligned else "non-"
+            self.test_group("Verify eof marker is handled correctly when reading eof using %saligned buffer" % align_str)
+
+            self.umount()
+            self.mount()
+            buffer = self.mem_alloc(2*self.rsize, aligned=aligned)
+            absfile = self.abspath(self.files[0])
+            self.dprint('DBG3', "Open file %s for reading" % absfile)
+            fd = posix.open(absfile, posix.O_RDONLY|posix.O_DIRECT)
+            offset = self.filesize - self.rsize
+            self.dprint('DBG3', "Read file %d@%d" % (self.rsize, offset))
+            self.libc.lseek(fd, offset, 0)
+            count = self.libc.read(fd, buffer, self.rsize)
+            offset += count
+            self.test(count == self.rsize, "READ right before end of file should return correct read count (%d)" % self.rsize, failmsg=", returned read count = %d" % count)
+            self.dprint('DBG3', "Read file %d@%d" % (self.rsize, offset))
+            count = self.libc.read(fd, buffer, self.rsize)
+            self.test(count == 0, "READ at end of file should return read count = 0", failmsg=", returned read count = %d" % count)
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                posix.close(fd)
+            self.free_buffers()
+            self.umount()
+
+    def eof_test(self):
+        """Verify eof marker is handled correctly when reading the end
+           of the file.
+        """
+        self.verify_eof()
+        #self.verify_eof(aligned=False)
+
+    def verify_read(self, read_ahead=False, aligned=True):
+        """Verify READ is sent with only the requested bytes bypassing
+           read ahead when read_ahead is True.
+           Verify READ is sent after writing when the file is open for
+           both read and write when read_ahead is False.
+        """
+        try:
+            fd = None
+            if read_ahead:
+                self.test_group("Verify READ is sent with only the requested bytes bypassing read ahead")
+            else:
+                self.test_group("Verify READ is sent after writing when the file is open for both read and write")
+
+            self.alloc_buffers()
+            self.umount()
+            self.trace_start()
+            self.mount()
+
+            if read_ahead:
+                filename = self.files[0]
+                absfile = self.abspath(filename)
+                self.dprint('DBG3', "Open file %s for reading" % absfile)
+                fd = posix.open(absfile, posix.O_RDONLY|posix.O_DIRECT)
+            else:
+                self.get_filename()
+                filename = self.filename
+                self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+                fd = posix.open(self.absfile, posix.O_RDWR|posix.O_CREAT|posix.O_DIRECT)
+
+                offset = 0
+                for i in xrange(3):
+                    count = self.do_write(fd, offset, self.wsize, aligned=aligned)
+                    offset += count
+
+            data = self.do_read(fd, 0, self.rsize, aligned=aligned)
+            self.test(data == self.data_pattern(0, self.rsize), "READ data should be correct")
+        except Exception:
+            self.test(False, traceback.format_exc())
+            return
+        finally:
+            if fd:
+                posix.close(fd)
+            self.umount()
+            self.free_buffers()
+            self.trace_stop()
+
+        try:
+            self.trace_open()
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+            stateid = deleg_stateid if deleg_stateid else open_stateid
+            idx = 0
+            pkt = self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (OP_READ, self.pktt.escape(stateid)))
+            self.test(pkt, "READ should be sent to the server")
+            if pkt:
+                roffset = pkt.NFSop.offset
+                rcount = pkt.NFSop.count
+                self.test(roffset == 0 and rcount == self.rsize, "READ should be sent with correct offset (%d) and count (%d)" % (0, self.rsize))
+            if read_ahead:
+                pkt = self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (OP_READ, self.pktt.escape(stateid)))
+                self.test(not pkt, "Extra READs should not be sent to the server")
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def read_test(self):
+        """Verify READ is sent after writing when the file is open for
+           both read and write.
+        """
+        self.verify_read()
+
+    def read_ahead_test(self):
+        """Verify READ is sent with only the requested bytes bypassing
+           read ahead.
+        """
+        self.verify_read(read_ahead=True)
+
+    def correctness_test(self):
+        """Verify data correctness when reading/writing using direct I/O.
+           File created with buffered I/O is read correctly with direct I/O.
+           File created with direct I/O is read correctly with buffered I/O.
+        """
+        try:
+            self.test_group("Verify data correctness when reading/writing using direct I/O")
+            self.alloc_buffers()
+            self.umount()
+            self.mount()
+
+            # Read file using direct I/O on a file created with buffered I/O
+            # and verify data read with known data on file
+            count = self.read_file(self.abspath(self.files[0]), delay=0)
+            self.test(count == self.filesize, "File created with buffered I/O is read correctly with direct I/O")
+
+            # Create file using direct I/O
+            self.get_filename()
+            self.write_file(self.absfile, delay=0)
+
+            self.umount()
+            self.mount()
+
+            # Verify written data by reading the file using buffered I/O
+            count = self.read_file(self.absfile, direct=False, delay=0)
+            self.test(count == self.filesize, "File created with direct I/O is read correctly with buffered I/O")
+            self.umount()
+        except Exception:
+            self.test(False, traceback.format_exc())
+            self.free_buffers()
+
+    def fstat_test(self):
+        """Verify fstat() gets correct file size after writing."""
+        try:
+            fd = None
+            self.test_group("Verify fstat() gets correct file size after writing")
+            self.alloc_buffers()
+            self.umount()
+            self.mount()
+
+            self.get_filename()
+            self.dprint('DBG3', "Open file %s for writing" % self.absfile)
+            fd = posix.open(self.absfile, posix.O_WRONLY|posix.O_CREAT|posix.O_DIRECT, 0644)
+
+            idx = 0
+            ngood = 0
+            offset = 0
+            while offset < self.filesize:
+                count = self.do_write(fd, offset, self.wsize, delay=0)
+                offset += count
+                idx += 1
+                fs = posix.fstat(fd)
+                if fs.st_size == offset:
+                    ngood += 1
+            self.test(ngood == idx, "The fstat() should get correct file size after every write")
+
+            # Write at a large offset of 10G
+            offset = 10 * 1024 * 1024 * 1024
+            count = self.do_write(fd, offset, self.wsize, delay=0)
+            fs = posix.fstat(fd)
+            size = offset + count
+            self.test(fs.st_size==size, "The fstat() should get correct file size after writing at offset = 10G", failmsg="\nexpecting %d, got %d" % (size, fs.st_size))
+
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                posix.close(fd)
+            self.umount()
+            self.free_buffers()
+
+    def verify_basic_dio(self, write, bsize=None, mtbsize=None, nio=None, align_hash=[], buffered_write=None, deleg=False):
+        """Verify basic direct I/O functionality.
+
+           write:
+               Test writing if true, otherwise test reading
+           bsize:
+               Block size used for I/O [default: --rsize/2]
+           mtbsize:
+               Block size to used on mount [default: not specified on mount]
+           nio:
+               Number of READ/WRITE packets each read()/write() request will
+               generate on the wire [default: calculated using bsize and mtbsize]
+           align_hash:
+               List of expected 'alignments' on pNFS, if item is True the I/O
+               is expected to go to the DS, otherwise to the MDS [default: []]
+           buffered_write:
+               Open another file for buffered I/O. If true use buffered write,
+               if false use buffered read [default: None(no buffered I/O)]
+           deleg:
+               Expect to get a delegation if true [default: False]
+        """
+        try:
+            fd = None
+            bfd = None
+            ofd = None
+            io_str  = "WRITE" if write else "READ"
+            io_mode = posix.O_WRONLY|posix.O_CREAT if write else posix.O_RDONLY
+            io_op   = OP_WRITE if write else OP_READ
+            bio_str  = "WRITE" if buffered_write else "READ"
+            bio_mode = os.O_WRONLY|os.O_CREAT if buffered_write else os.O_RDONLY
+            bio_op   = OP_WRITE if buffered_write else OP_READ
+
+            if not bsize:
+                bsize = self.rsize/2
+            self.alloc_buffers(size=bsize)
+
+            self.umount()
+            self.trace_start()
+            if mtbsize:
+                self.mount(mtopts="hard,intr,rsize=%d,wsize=%d" % (mtbsize, mtbsize))
+            else:
+                self.mount()
+
+            if nio is None:
+                if mtbsize:
+                    nio = int(bsize / mtbsize) + (1 if bsize > mtbsize and bsize % mtbsize else 0)
+                else:
+                    nio = 1
+                b_size = mtbsize if nio > 1 else bsize
+            else:
+                b_size = bsize / nio
+
+            if write:
+                while len(self.files) < 4:
+                    self.get_filename()
+                file = self.files[3]
+            else:
+                file = self.files[0]
+            absfile = self.abspath(file)
+
+            if deleg:
+                oofile = self.abspath(self.files[2])
+                self.dprint('DBG3', "Open file %s so open owner sticks around" % oofile)
+                ofd = open(oofile, 'r')
+
+            self.dprint('DBG3', "Open file %s for %s" % (absfile, io_str))
+            fd = posix.open(absfile, io_mode|posix.O_DIRECT)
+
+            if buffered_write != None:
+                # Open file for buffered I/O
+                if buffered_write:
+                    while len(self.files) < 5:
+                        self.get_filename()
+                    bfile = self.files[4]
+                else:
+                    bfile = self.files[1]
+                babsfile = self.abspath(bfile)
+                self.dprint('DBG3', "Open file %s for %s (buffered)" % (babsfile, bio_str))
+                bfd = os.open(babsfile, bio_mode)
+
+            off = 0
+            boffset = 0
+            test_hash = []
+            N = len(align_hash) if len(align_hash) else 3
+            for i in xrange(N):
+                b_off = off
+                if len(align_hash):
+                    aligned = align_hash[i]
+                else:
+                    aligned = True
+                for j in xrange(nio):
+                    test_hash.append({'offset':b_off, 'size':b_size, 'aligned':aligned})
+                    b_off += b_size
+                if write:
+                    count = self.do_write(fd, off, bsize, aligned=aligned)
+                else:
+                    data = self.do_read(fd, off, bsize, aligned=aligned)
+                if buffered_write != None:
+                    # Buffered I/O
+                    if buffered_write:
+                        self.dprint('DBG3', "Write file %d@%d (buffered)" % (bsize, boffset))
+                        count = os.write(bfd, self.data_pattern(boffset, bsize))
+                        self.dprint('DBG3', "Write returned %d bytes" % count)
+                    else:
+                        self.dprint('DBG3', "Read file %d@%d (buffered)" % (bsize, boffset))
+                        data = os.read(bfd, bsize)
+                        self.dprint('DBG3', "Read returned %d bytes" % len(data))
+                    boffset += bsize
+                    # Slow down traffic for tcpdump to capture all packets
+                    self.delay_io()
+                off += 2*bsize
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                posix.close(fd)
+            if bfd:
+                os.close(bfd)
+            if deleg:
+                ofd.close()
+            self.umount()
+            self.free_buffers()
+            self.trace_stop()
+
+        try:
+            self.trace_open()
+
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(file, self.server_ipaddr, self.port)
+            save_index = self.pktt.index
+            if deleg_stateid != None:
+                self.dprint('DBG3', "Delegation is granted")
+            stateid = deleg_stateid if deleg_stateid else open_stateid
+            (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
+            self.layout = loc_body
+            self.find_getdeviceinfo()
+            self.pktt.rewind(save_index)
+
+            idx = 0
+            xids = {}
+            while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(stateid))):
+                roffset = self.pktt.pkt.NFSop.offset
+                ipaddr  = self.pktt.pkt.ip.dst
+                port    = self.pktt.pkt.tcp.dst_port
+                xid     = self.pktt.pkt.rpc.xid
+                if xids.get(xid, None) is None:
+                    # Save xid to keep track of re-transmitted packets
+                    xids[xid] = 1
+                else:
+                    # Skip re-transmitted packets
+                    continue
+                if write:
+                    rsize = len(self.pktt.pkt.NFSop.data)
+                else:
+                    rsize = self.pktt.pkt.NFSop.count
+                if len(test_hash) <= idx:
+                    # Got unexpected READ/WRITE
+                    self.test(0, "%s (%d@%d) should not be sent" % (io_str, rsize, roffset))
+                else:
+                    # Check READ/WRITE for expected offset and size
+                    toffset  = test_hash[idx].get('offset') 
+                    tsize    = test_hash[idx].get('size')
+                    taligned = test_hash[idx].get('aligned')
+                    self.test(toffset == roffset and tsize == rsize, "%s (%d@%d) should be sent with correct offset and count" % (io_str, tsize, toffset), failmsg=", got packet (%d@%d)" %(rsize, roffset))
+                    if len(align_hash):
+                        if taligned and self.ispnfs:
+                            dsidx = 0
+                            ds_index = None
+                            for ds in self.dslist:
+                                if ipaddr == ds['ipaddr'] and port == ds['port']:
+                                    ds_index = dsidx
+                                    break
+                                dsidx += 1
+                            out = self.verify_stripe(toffset, tsize, ds_index)
+                            # XXX FIXME check ds_index
+                            self.test(out, "%s should be sent to the correct DS%s" % (io_str, "" if ds_index is None else "(%d)"%ds_index))
+                        else:
+                            rserver = MDS if self.ispnfs else SERVER
+                            self.test(ipaddr == self.server_ipaddr and port == self.port, "%s should be sent to the %s" % (io_str, mds_map[rserver]))
+                idx += 1
+            for item in test_hash[idx:]:
+                # Check for expected READ/WRITE packets which were not found
+                toffset = item.get('offset') 
+                tsize   = item.get('size') 
+                self.test(0, "%s (%d@%d) should be sent" % (io_str, tsize, toffset))
+
+            if buffered_write != None:
+                self.pktt.rewind()
+                (filehandle, open_stateid, deleg_stateid) = self.find_open(bfile, self.server_ipaddr, self.port)
+                stateid = deleg_stateid if deleg_stateid else open_stateid
+                (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
+                self.layout = loc_body
+                total_size = 0
+                rmatch = True
+                xids = {}
+                while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (bio_op, self.pktt.escape(stateid))):
+                    roffset = self.pktt.pkt.NFSop.offset
+                    xid     = self.pktt.pkt.rpc.xid
+                    if xids.get(xid, None) is None:
+                        # Save xid to keep track of re-transmitted packets
+                        xids[xid] = 1
+                    else:
+                        # Skip re-transmitted packets
+                        continue
+                    if buffered_write:
+                        rsize = len(self.pktt.pkt.NFSop.data)
+                    else:
+                        rsize = self.pktt.pkt.NFSop.count
+                    if rsize != bsize:
+                        rmatch = False
+                    total_size += rsize
+                expr = (buffered_write and total_size == boffset) or (total_size >= boffset)
+                msg  = "%ss should be sent with correct size for buffered I/O" % bio_str
+                fmsg = "; expecting %d, got %d" % (boffset, total_size)
+                #XXX
+                #self.test(expr, msg, failmsg=fmsg)
+                self.test(not rmatch, "%ss should be cached for buffered I/O" % bio_str)
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def basic_dio(self, testname):
+        """Verify basic direct I/O functionality for given testname."""
+        try:
+            for write in self.io_list:
+                for deleg in self.deleg_list:
+                    if deleg and (write and not self.write_deleg or not write and not self.read_deleg):
+                        # Skip delegation testing for I/O since delegation
+                        # was not granted for this particular I/O
+                        continue
+                    for bwrite in self.bio_list:
+                        io_str   = "WRITE" if write  else "READ"
+                        bio_str  = "WRITE" if bwrite else "READ"
+                        size_str = "wsize" if write  else "rsize"
+                        wr_str   = "writing from" if write  else "reading into"
+                        dstr = " with deleg" if deleg else ""
+                        bstr = "" if bwrite is None else " and having %s buffered I/O to another file" % bio_str
+                        if self.ispnfs:
+                            ds_str   = "correct %s" % mds_map[DS]
+                            mds_str  = mds_map[MDS]
+                            both_str = "both %s and correct %s" % (mds_map[MDS], mds_map[DS])
+                        else:
+                            ds_str   = mds_map[SERVER]
+                            mds_str  = mds_map[SERVER]
+                            both_str = mds_map[SERVER]
+
+                        if testname == "basic":
+                            self.test_group("Verify %s packet is sent for each %s%s%s" % (io_str, io_str.lower(), dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg)
+                        elif testname == "rsize" and not write:
+                            self.test_group("Verify multiple %s packets are sent for each %s having request size > %s%s%s" % (io_str, io_str.lower(), size_str, dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=16384, mtbsize=4096)
+                        elif testname == "wsize" and write:
+                            self.test_group("Verify multiple %s packets are sent for each %s having request size > %s%s%s" % (io_str, io_str.lower(), size_str, dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=16384, mtbsize=4096)
+                        elif testname == "aligned":
+                            self.test_group("Verify %s is sent to %s when PAGESIZE aligned%s%s" % (io_str, ds_str, dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=self.rsize, align_hash=[True, True, True, True])
+                        elif testname == "nonaligned":
+                            self.test_group("Verify %s is sent to %s when not PAGESIZE aligned%s%s" % (io_str, mds_str, dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=self.rsize, align_hash=[False, False, False, False])
+                        elif testname == "diffalign":
+                            self.test_group("Verify %ss are sent to %s on same open using buffers with different alignments%s%s" % (io_str, both_str, dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=self.rsize, align_hash=[True, False, True, False])
+                        elif testname == "stripesize" and self.ispnfs:
+                            self.test_group("Verify multiple %s packets are sent for each %s having request size > stripe size%s%s" % (io_str, io_str.lower(), dstr, bstr))
+                            self.verify_basic_dio(write=write, buffered_write=bwrite, deleg=deleg, bsize=2*self.stripe_size, mtbsize=4*self.stripe_size, nio=2, align_hash=[True, True])
+        except Exception:
+            self.test(False, traceback.format_exc())
+
+    def basic_test(self):
+        """Verify a packet is sent for each I/O request."""
+        self.basic_dio('basic')
+
+    def rsize_test(self):
+        """Verify multiple READ packets are sent for each read request
+           having request size > rsize.
+        """
+        self.basic_dio('rsize')
+
+    def wsize_test(self):
+        """Verify multiple WRITE packets are sent for each write request
+           having request size > wsize
+        """
+        self.basic_dio('wsize')
+
+    def aligned_test(self):
+        """Verify packet is sent to correct DS server when using a memory
+           which is PAGESIZE aligned.
+        """
+        self.basic_dio('aligned')
+
+    def nonaligned_test(self):
+        """Verify packet is sent to the MDS when using a memory which
+           is not PAGESIZE aligned.
+        """
+        self.basic_dio('nonaligned')
+
+    def diffalign_test(self):
+        """Verify packets are sent to both the MDS and correct DS on same open
+           using buffers with different alignments.
+        """
+        self.basic_dio('diffalign')
+
+    def stripesize_test(self):
+        """Verify multiple packets are sent for each request having the
+           request size greater than stripe size.
+        """
+        self.basic_dio('stripesize')
+
+    def vectored_io(self, tinfo, offset=0, contiguous=False, write=False):
+        """Verify vectored I/O functionality.
+
+           tinfo:
+               List of vector definitions and expected results. Each vector
+               definition is a dictionary having the following keys:
+                   size:    size of vector
+                   aligned: buffer alignment of vector
+                   server:  expected server where the vector data is going to
+                            if not specified, this vector data is part of the
+                            previous packet
+           offset:
+               Read/write at given offset [default: 0]
+           contiguous:
+               Vectors are contiguous if true [default: False]
+           write:
+               Test writing if true, otherwise test reading [default: False]
+        """
+        try:
+            # Generate test hash
+            fd = None
+            head_vec = []
+            test_hash = []
+            total_size = 0
+            for item in tinfo:
+                server = item.get('server')
+                if server != None:
+                    test_hash.append({'server':server, 'size':item['size']})
+                else:
+                    test_hash[-1]['size'] += item['size']
+                align_str = "" if item['aligned'] else "non-"
+                if not contiguous or len(head_vec) == 0:
+                    head_vec.append("%saligned(%d)" % (align_str, item['size']))
+                else:
+                    head_vec.append("(%d)" % item['size'])
+                total_size += item['size']
+            if not self.ispnfs:
+                for item in test_hash:
+                    item['server'] = 2
+
+            con_str = "" if contiguous else "non-"
+            off_str = "@%d " % offset if offset else ""
+            io_str  = "WRITE" if write else "READ"
+            io_mode = posix.O_WRONLY|posix.O_CREAT if write else posix.O_RDONLY
+            io_op   = OP_WRITE if write else OP_READ
+            self.test_group("Verify %s %s%scontiguous vector [%s]" % (io_str, off_str, con_str, ", ".join(head_vec)))
+
+            self.dprint('DBG3', "Create buffers")
+            idx = 0
+            off = offset
+            buffers = []
+            nvecs = len(tinfo)
+            vec_str = "IOvecs("
+            for item in tinfo:
+                if contiguous:
+                    if idx == 0:
+                        buffers.append(self.mem_alloc(total_size, aligned=item['aligned'], fill=write, offset=offset))
+                    else:
+                        buffer = ctypes.c_void_p()
+                        buffer.value = buffers[idx-1].value + tinfo[idx-1]['size']
+                        buffers.append(buffer)
+                else:
+                    buffers.append(self.mem_alloc(item['size'], aligned=item['aligned'], fill=write, offset=off))
+                    off += item['size']
+                vec_str += "iovec(buffers[%d], %d)," % (idx, item['size'])
+                idx += 1
+            vec_str += ")"
+
+            # Create array of iovec structures
+            IOvecs = iovec * nvecs
+            vectors = eval(vec_str)
+
+            self.umount()
+            self.trace_start()
+            self.mount()
+            if write:
+                while len(self.files) < 4:
+                    self.get_filename()
+                file = self.files[3]
+            else:
+                file = self.files[0]
+            absfile = self.abspath(file)
+            self.dprint('DBG3', "Open file %s for %s" % (absfile, io_str))
+            fd = posix.open(absfile, io_mode|posix.O_DIRECT)
+            self.libc.lseek(fd, offset, 0)
+            wr_str = "Writing" if write  else "Reading"
+            fi_str = "to" if write else "from"
+            self.dprint('DBG3', "%s %d vectors %s file %s " % (wr_str, nvecs, fi_str, absfile))
+            if write:
+                count = self.libc.writev(fd, vectors, nvecs)
+            else:
+                count = self.libc.readv(fd, vectors, nvecs)
+            # Slow down traffic for tcpdump to capture all packets
+            self.delay_io()
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                self.dprint('DBG3', "Close file %s " % absfile)
+                posix.close(fd)
+            self.trace_stop()
+
+        try:
+            fd = None
+            self.trace_open()
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(file, self.server_ipaddr, self.port, anyclaim=True)
+            save_index = self.pktt.index
+            if filehandle is None:
+                self.test(False, "Could not find OPEN for file")
+            stateid = deleg_stateid if deleg_stateid else open_stateid
+            (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
+            self.layout = loc_body
+            self.find_getdeviceinfo()
+            self.pktt.rewind(save_index)
+            dsismds = False
+            for ds in self.dslist:
+                if self.server_ipaddr == ds['ipaddr'] and self.port == ds['port']:
+                    dsismds = True
+                    break
+            idx = 0
+            xids = {}
+            received = []
+            while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(stateid))):
+                ipaddr = self.pktt.pkt.ip.dst
+                port   = self.pktt.pkt.tcp.dst_port
+                xid    = self.pktt.pkt.rpc.xid
+                if xids.get(xid, None) is None:
+                    # Save xid to keep track of re-transmitted packets
+                    xids[xid] = 1
+                else:
+                    # Skip re-transmitted packets
+                    continue
+                if write:
+                    rsize = len(self.pktt.pkt.NFSop.data)
+                else:
+                    rsize = self.pktt.pkt.NFSop.count
+                if self.ispnfs:
+                    rserver = MDS if (ipaddr == self.server_ipaddr and port == self.port) else DS
+                else:
+                    rserver = SERVER
+                if len(test_hash) <= idx:
+                    self.test(0, "%s should not be sent to the %s with size %d" % (io_str, mds_map[rserver], rsize))
+                else:
+                    server = test_hash[idx].get('server') 
+                    size = test_hash[idx].get('size') 
+                    srvtest = dsismds or server == rserver
+                    srvrmsg = " not the %s" % mds_map[rserver] if not srvtest else ""
+                    sizemsg = " not %d" % rsize if size != rsize else ""
+                    self.test(srvtest and size == rsize, "%s should be sent to the %s%s with size %d%s" % (io_str, mds_map[server], srvrmsg, size, sizemsg))
+                received.append("%s(%d)" % (mds_map[rserver], rsize))
+                idx += 1
+            for item in test_hash[idx:]:
+                server = item.get('server') 
+                size   = item.get('size') 
+                self.test(0, "%s should be sent to the %s with size %d" % (io_str, mds_map[server], size))
+            self.dprint('INFO', "Client sent [%s]" % ", ".join(received))
+
+            # Check data on all vectors
+            idx = 0
+            for item in tinfo:
+                size = item['size']
+                data = ctypes.string_at(buffers[idx], size)
+                if write:
+                    if fd is None:
+                       fd = open(absfile, 'r')
+                       fd.seek(offset)
+                    rdata = fd.read(size)
+                    self.test(data == rdata, "WRITE vector(%d) data should be correct" % size)
+                else:
+                    self.test(data == self.data_pattern(offset, size), "READ vector(%d) data should be correct" % size)
+                offset += size
+                idx += 1
+        except Exception:
+            self.test(False, traceback.format_exc())
+        finally:
+            if fd:
+                fd.close()
+            self.free_buffers()
+            self.umount()
+
+    def vectored_io_test(self):
+        """Verify vectored I/O functionality."""
+        for write in self.io_list:
+            #=======================================================================
+            # Non-contiguous vectors on aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':DS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':DS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':DS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True, 'server':DS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write)
+
+            #=======================================================================
+            # Non-aligned contiguous vectors on aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            #=======================================================================
+            # Non-aligned contiguous vectors on aligned offset with various sizes
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            #=======================================================================
+            # Aligned contiguous vectors on aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':True, 'server':DS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            #=======================================================================
+            # Aligned contiguous vectors on aligned offset with various sizes
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize,                 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+                {'size':self.rsize,                 'aligned':True},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':DS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, contiguous=True)
+
+            #=======================================================================
+            # Non-contiguous vectors on non-aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize, 'aligned':True, 'server':MDS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            #=======================================================================
+            # Non-contiguous vectors on non-aligned offset with various sizes
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True,  'server':MDS},
+                {'size':self.rsize,                 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True,  'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2)
+
+            #=======================================================================
+            # Non-aligned contiguous vectors on non-aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+                {'size':self.rsize, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            #=======================================================================
+            # Non-aligned contiguous vectors on non-aligned offset with various sizes
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':False, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            #=======================================================================
+            # Aligned contiguous vectors on non-aligned offset
+            tinfo = [
+                {'size':self.rsize, 'aligned':True,  'server':MDS},
+                {'size':self.rsize, 'aligned':True},
+                {'size':self.rsize, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            #=======================================================================
+            # Aligned contiguous vectors on non-aligned offset with various sizes
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize,                 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+            tinfo = [
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True, 'server':MDS},
+                {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
+            ]
+            self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+################################################################################
+#  Entry point
+x = DioTest(usage=USAGE, testnames=TESTNAMES)
+
+try:
+    if x.rsize != x.wsize:
+        raise Exception("CONFIG error: options rsize and wsize must have the same value")
+    elif x.rsize % x.PAGESIZE > 0:
+        raise Exception("CONFIG error: option rsize must be a multiple of %d (PAGESIZE)" % x.PAGESIZE)
+
+    x.umount()
+    x.trace_start()
+    x.mount()
+    statfs = os.statvfs(x.mtpoint)
+    x.f_bsize = statfs.f_bsize
+    x.setup(nfiles = 2)
+    x.trace_stop()
+    x.trace_open()
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[0], x.server_ipaddr, x.port)
+    (layoutget, layoutget_res, loc_body) = x.find_layoutget(filehandle)
+    x.find_getdeviceinfo()
+    x.ispnfs = False if layoutget is None or len(x.dslist) == 0 else True
+
+    if x.ispnfs:
+        x.stripe_size = loc_body['stripe_size']
+
+    if x.f_bsize < 3*x.rsize:
+        raise Exception("CONFIG error: mount options rsize and wsize must be greater than or equal to 3 times the value of option rsize")
+    elif x.ispnfs and x.stripe_size < 3*x.rsize:
+        raise Exception("CONFIG error: option rsize must be less or equal to %d (stripe size / 3)" % x.stripe_size/3)
+
+    # Check if delegations are granted
+    x.umount()
+    x.trace_start()
+    x.mount()
+    oofile = x.abspath(x.files[0])
+    x.dprint('DBG3', "Open file %s so open owner sticks around" % oofile)
+    ofd = open(oofile, 'r')
+    x.create_file()
+    rfile = x.abspath(x.files[1])
+    x.dprint('DBG3', "Open file %s for reading" % rfile)
+    fd = open(rfile, 'r')
+    fd.read(x.rsize)
+    ofd.close()
+    fd.close()
+    x.umount()
+    x.trace_stop()
+    x.trace_open()
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[1], x.server_ipaddr, x.port)
+    x.read_deleg = False if deleg_stateid is None else True
+    x.pktt.rewind()
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[2], x.server_ipaddr, x.port)
+    x.write_deleg = False if deleg_stateid is None else True
+    if not x.read_deleg:
+        x.dprint('INFO', "READ  delegations are not available -- skipping tests expecting read  delegations")
+    if not x.write_deleg:
+        x.dprint('INFO', "WRITE delegations are not available -- skipping tests expecting write delegations")
+
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    x.exit()
+
