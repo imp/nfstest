@@ -270,10 +270,10 @@ Useful options
    is '^' then run all the tests except the ones listed.
 
    Example:
-       Runt only the access, chdir, creat and fcntl tests
+       Run only the access, chdir, creat and fcntl tests
        $ nfstest_posix --server 192.168.0.11 --runtest access,chdir,creat,fcntl
 
-       Runt all the tests except for open and chmod
+       Run all the tests except for open and chmod
        $ nfstest_posix --server 192.168.0.11 --runtest ^open,chmod
 
 --tverbose <group|normal|verbose>
