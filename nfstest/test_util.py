@@ -209,7 +209,8 @@ class TestUtil(NFSUtil):
         self._test_time()
         self.trace_stop()
         self.cleanup()
-        self.umount()
+        if self.mounted:
+            self.umount()
         if self._network:
             self.network_reset()
 
