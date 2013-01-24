@@ -93,6 +93,7 @@ class NFSUtil(Host):
         self.tcpdump   = kwargs.pop("tcpdump",   c.NFSTEST_TCPDUMP)
         self.messages  = kwargs.pop("messages",  c.NFSTEST_MESSAGESLOG)
         self.tmpdir    = kwargs.pop("tmpdir",    c.NFSTEST_TMPDIR)
+        self._nfsdebug = False
         Host.__init__(self)
 
         # Initialize object variables
@@ -167,7 +168,7 @@ class NFSUtil(Host):
                 self.dprint('DBG2', "Trace stop")
                 self.stop_cmd(self.traceproc)
                 self.traceproc = None
-            if not self.notrace:
+            if not self.notrace and self._nfsdebug:
                 self.nfs_debug_reset()
         except:
             return
@@ -218,6 +219,7 @@ class NFSUtil(Host):
             self.dbgmode = fstat.st_mode & 0777
             for mod in modmsgs.keys():
                 if len(modmsgs[mod]):
+                    self._nfsdebug = True
                     cmd = "rpcdebug -v -m %s -s %s" % (mod, modmsgs[mod])
                     self.run_cmd(cmd, sudo=True, dlevel='DBG2', msg="NFS debug enable: ")
 
