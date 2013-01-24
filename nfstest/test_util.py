@@ -519,13 +519,13 @@ class TestUtil(NFSUtil):
 
         self.dprint('DBG7', "CLEANUP starts")
         if not self.keeptraces and (self.rmtraces or self._msg_count[FAIL] == 0):
-            try:
-                for rfile in self.tracefiles:
+            for rfile in self.tracefiles:
+                try:
                     # Remove trace files as root
                     self.dprint('DBG5', "    Removing trace file [%s]" % rfile)
-                    os.system(self._sudo_cmd("rm -f %s" % rfile))
-            except:
-                pass
+                    os.system(self.sudo_cmd("rm -f %s" % rfile))
+                except:
+                    pass
 
         if not self.mounted and self.remove_list:
             self.mount()
