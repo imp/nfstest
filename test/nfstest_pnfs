@@ -19,7 +19,7 @@ import struct
 import traceback
 import nfstest_config as c
 from packet.nfs.nfs4_const import *
-from nfstest.test_util import TestUtil,FAIL
+from nfstest.test_util import TestUtil
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
