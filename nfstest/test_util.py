@@ -154,7 +154,6 @@ class TestUtil(NFSUtil):
             # Remove extension
             self.progname = self.progname[:-3]
         self._name = None
-        NFSUtil.__init__(self)
         self.tverbose = 1
         self._bugmsgs = []
         self.ignore = False
@@ -194,6 +193,7 @@ class TestUtil(NFSUtil):
         self.dindent(4)
         self.device_info = {}
         self.dslist = []
+        NFSUtil.__init__(self)
         self._init_options()
 
     def __del__(self):
