@@ -415,7 +415,8 @@ class Host(BaseObj):
 
         infolist = socket.getaddrinfo(host, 2049, 0, 0, socket.SOL_TCP)
         for info in infolist:
-            if info[0] == family:
+            # Ignore loopback addresses
+            if info[0] == family and info[4][0] not in ('127.0.0.1', '::1'):
                 return info[4][0]
-        raise Exception("Unable to get IP address")
+        raise Exception("Unable to get IP address for host '%s'" % host)
 
