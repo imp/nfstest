@@ -1003,6 +1003,7 @@ class PosixTest(TestUtil):
                 os.chmod(self.absfile, 0777)
             for flags in flist:
                 try:
+                    tryopen = False
                     opened = False
                     flag_str = oflag_str(flags)
                     mode = 0
@@ -1032,6 +1033,7 @@ class PosixTest(TestUtil):
 
                     try:
                         e = None
+                        tryopen = True
                         self.dprint('DBG7', "Open %s file %s with flags %s" % (ftype, filename, flag_str))
                         fd = posix.open(self.absfile, mode, perms)
                         opened = True
@@ -1098,7 +1100,9 @@ class PosixTest(TestUtil):
                     if opened:
                         self.dprint('DBG7', "Close file %s" % filename)
                         posix.close(fd)
-                    if ftype == 'non-existent' and os.path.exists(self.absfile):
+                    if tryopen and ftype == 'non-existent' and (opened or os.path.exists(self.absfile)):
+                        # Remove file so the file does not exist
+                        # for next iteration
                         self.dprint('DBG5', "Removing file [%s]" % self.absfile)
                         os.unlink(self.absfile)
             if self.tverbose == 1:
