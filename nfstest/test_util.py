@@ -206,7 +206,6 @@ class TestUtil(NFSUtil):
         self.dprint('DBG7', "")
         self.dprint('DBG7', "Calling %s() destructor" % self.__class__.__name__)
         self._tverbose()
-        self._test_time()
         self.trace_stop()
         self.cleanup()
         if self.mounted:
@@ -616,6 +615,7 @@ class TestUtil(NFSUtil):
             tmsg = " (%d passed, %d failed%s%s)" % (pcount, fcount, bugs, warns)
             self._print_msg(msg + tmsg, tid)
             sys.stdout.flush()
+        self._test_time()
 
     def _test_msg(self, tid, msg):
         """Common method to display and group test messages."""
@@ -660,7 +660,6 @@ class TestUtil(NFSUtil):
 
     def test_group(self, msg):
         """Display heading message and start a test group."""
-        self._test_time()
         self._test_msg(HEAD, msg)
 
     def warning(self, msg):
