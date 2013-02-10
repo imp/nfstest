@@ -1098,9 +1098,9 @@ class PosixTest(TestUtil):
                     if opened:
                         self.dprint('DBG7', "Close file %s" % filename)
                         posix.close(fd)
-                        if ftype != 'existent':
-                            self.dprint('DBG5', "Removing file [%s]" % self.absfile)
-                            os.unlink(self.absfile)
+                    if ftype == 'non-existent' and os.path.exists(self.absfile):
+                        self.dprint('DBG5', "Removing file [%s]" % self.absfile)
+                        os.unlink(self.absfile)
             if self.tverbose == 1:
                 for item in self.open_test_msgs:
                     if item[0] + item[1] > 0:
