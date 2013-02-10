@@ -567,7 +567,7 @@ class TestUtil(NFSUtil):
     def _print_msg(self, msg, tid=None):
         """Display message to the screen and to the log file."""
         tidmsg_l = '' if tid is None else _test_map[tid]
-        tidmsg_s = '' if tid is None or not _isatty else _test_map_c[tid]
+        tidmsg_s = _test_map_c[tid] if _isatty else tidmsg_l
         self.write_log(tidmsg_l + msg)
         print tidmsg_s + msg
         sys.stdout.flush()
