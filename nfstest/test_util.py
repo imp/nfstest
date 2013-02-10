@@ -216,18 +216,11 @@ class TestUtil(NFSUtil):
         if len(self.test_msgs) > 0:
             if getattr(self, 'logfile', None):
                 print "\nLogfile: %s" % self.logfile
-            pass_count = self._msg_count[PASS]
-            fail_count = self._msg_count[FAIL]
-            warn_count = self._msg_count[WARN]
-            bug_count  = self._msg_count[BUG]
-            total = pass_count + fail_count + bug_count
-            bugs  = ", %d known bugs" % bug_count  if bug_count  > 0 else ""
-            warns = ", %d warnings"   % warn_count if warn_count > 0 else ""
-            msg = "%d tests (%d passed, %d failed%s%s)" % (total, pass_count, fail_count, bugs, warns)
+            msg = "%d tests%s" % self._total_counts(self._msg_count)
             self.write_log("\n" + msg)
-            if fail_count > 0:
+            if self._msg_count[FAIL] > 0:
                 msg = "\033[31m" + msg + "\033[m" if _isatty else msg
-            elif warn_count > 0:
+            elif self._msg_count[WARN] > 0:
                 msg = "\033[33m" + msg + "\033[m" if _isatty else msg
             else:
                 msg = "\033[32m" + msg + "\033[m" if _isatty else msg
@@ -584,35 +577,30 @@ class TestUtil(NFSUtil):
             ret = "%dh%s" % (hh, ret)
         return ret
 
+    def _total_counts(self, gcounts):
+        """Internal method to return a string containing how many tests passed
+           and how many failed.
+        """
+        total = gcounts[PASS] + gcounts[FAIL] + gcounts[BUG]
+        bugs  = ", %d known bugs" % gcounts[BUG]  if gcounts[BUG] > 0  else ""
+        warns = ", %d warnings"   % gcounts[WARN] if gcounts[WARN] > 0 else ""
+        tmsg = " (%d passed, %d failed%s%s)" % (gcounts[PASS], gcounts[FAIL], bugs, warns)
+        return (total, tmsg)
+
     def _tverbose(self):
         """Display test group message as a PASS/FAIL including the number
            of tests that passed and failed within this test group.
         """
         if self.tverbose == 0 and len(self.test_msgs) > 0:
-            head = self.test_msgs[-1][0]
-            msg = head[1].replace("\n", "\n          ")
-            pcount = 0
-            fcount = 0
-            bcount = 0
-            wcount = 0
+            gcounts = {}
+            for tid in _test_map:
+                gcounts[tid] = 0
             for item in self.test_msgs[-1]:
-                if item[0] == PASS:
-                    pcount += 1
-                elif item[0] == FAIL:
-                    fcount += 1
-                elif item[0] == BUG:
-                    bcount += 1
-                elif item[0] == WARN:
-                    wcount += 1
-            if fcount > 0:
-                tid = FAIL
-            else:
-                tid = PASS
+                gcounts[item[0]] += 1
+            (total, tmsg) = self._total_counts(gcounts)
+            tid = FAIL if gcounts[FAIL] > 0 else PASS
             self._msg_count[tid] += 1
-            tcount = pcount + fcount + bcount
-            bugs  = ", %d known bugs" % bcount if bcount > 0 else ""
-            warns = ", %d warnings"   % wcount if wcount > 0 else ""
-            tmsg = " (%d passed, %d failed%s%s)" % (pcount, fcount, bugs, warns)
+            msg = self.test_msgs[-1][0][1].replace("\n", "\n          ")
             self._print_msg(msg + tmsg, tid)
             sys.stdout.flush()
         self._test_time()
