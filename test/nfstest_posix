@@ -1033,8 +1033,8 @@ class PosixTest(TestUtil):
                             continue
                         if posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
                             # O_RDONLY and O_TRUNC are set
-                            msg = "open - opening existent file should return an error when O_RDONLY|O_TRUNC is used"
-                            self.test(e != None and e.errno == 9, msg, subtest=", flags %s" % flag_str)
+                            msg = "open - opening existent file should be unspecified when O_RDONLY|O_TRUNC is used"
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
                             continue
                         fstat = os.stat(self.absfile)
                         msg = "open - opening existent file should succeed"
