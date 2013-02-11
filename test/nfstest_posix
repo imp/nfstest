@@ -968,14 +968,19 @@ class PosixTest(TestUtil):
             flist += list(itertools.combinations(flag_list, i))
 
         iosize = 32
-        self.create_dir()
-        self.get_filename(dir=self.dirname)
-        filename = os.path.basename(self.absfile)
 
         for ftype in ['non-existent', 'existent']:
-            if ftype == 'existent':
+            if ftype == 'non-existent':
+                # Get a new name for non-existent file
+                self.get_filename()
+            else:
+                # Create file to use as existent file
                 self.create_file()
                 os.chmod(self.absfile, 0777)
+
+            # Get the name for file under test
+            filename = os.path.basename(self.absfile)
+
             for flags in flist:
                 try:
                     tryopen = False
