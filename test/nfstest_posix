@@ -1027,6 +1027,10 @@ class PosixTest(TestUtil):
                     if not is_write_allowed and posix.O_EXCL in flags:
                         continue
 
+                    if ftype in [EXISTENT, SYMLINK]:
+                        # Get file stats before open
+                        ofstat = os.stat(self.absfile)
+
                     try:
                         e = None
                         tryopen = True
@@ -1035,6 +1039,10 @@ class PosixTest(TestUtil):
                         opened = True
                     except OSError as e:
                         pass
+
+                    if opened:
+                        # Get file stats after open
+                        fstat = posix.fstat(fd)
 
                     if ftype in [EXISTENT, SYMLINK]:
                         if posix.O_EXCL in flags and posix.O_CREAT in flags:
@@ -1056,20 +1064,18 @@ class PosixTest(TestUtil):
                             msg = "open - opening %s should return an error when O_NOFOLLOW is used" % fmap[ftype]
                             self.test(e != None and e.errno == 40, msg, subtest=", flags %s" % flag_str)
                             continue
-                        fstat = os.stat(self.absfile)
                         msg = "open - opening %s should succeed" % fmap[ftype]
                         self.test(e == None, msg, subtest=" with flags %s" % flag_str)
                         if e:
                             # The open failed, move on to the next test
                             continue
                         msg = "open - permission mode should not be changed when opening %s" % fmap[ftype]
-                        self.test(fstat.st_mode & 0777 != perms, msg, subtest=", flags %s" % flag_str)
+                        self.test(fstat.st_mode & 0777 == ofstat.st_mode & 0777, msg, subtest=", flags %s" % flag_str)
                     else:
                         if posix.O_CREAT in flags:
                             # O_CREAT is set
                             msg = "open - file should be created when O_CREAT is used"
                             self.test(os.path.exists(self.absfile), msg, subtest=", flags %s" % flag_str)
-                            fstat = os.stat(self.absfile)
                             msg = "open - file should be created with correct permission mode"
                             self.test(fstat.st_mode & 0777 == perms, msg, subtest=", flags %s" % flag_str)
                         else:
