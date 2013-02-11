@@ -967,10 +967,16 @@ class PosixTest(TestUtil):
         for i in xrange(1, len(flag_list)+1):
             flist += list(itertools.combinations(flag_list, i))
 
-        iosize = 32
+        iosize = 1024
+        EXISTENT    = 1
+        NONEXISTENT = 2
+        fmap = {
+            EXISTENT    : 'existent file',
+            NONEXISTENT : 'non-existent file',
+        }
 
-        for ftype in ['non-existent', 'existent']:
-            if ftype == 'non-existent':
+        for ftype in [NONEXISTENT, EXISTENT]:
+            if ftype == NONEXISTENT:
                 # Get a new name for non-existent file
                 self.get_filename()
             else:
@@ -991,7 +997,7 @@ class PosixTest(TestUtil):
                         mode |= flag
 
                     perms = 0700 | random.randint(0,077)
-                    if perms == 0777 and ftype == 'existent':
+                    if perms == 0777 and ftype == EXISTENT:
                         # Change open permissions to make it different that current
                         # file permissions
                         perms = 0755
@@ -1014,13 +1020,13 @@ class PosixTest(TestUtil):
                     try:
                         e = None
                         tryopen = True
-                        self.dprint('DBG7', "Open %s file %s with flags %s" % (ftype, filename, flag_str))
+                        self.dprint('DBG7', "Open %s %s with flags %s" % (fmap[ftype], filename, flag_str))
                         fd = posix.open(self.absfile, mode, perms)
                         opened = True
                     except OSError as e:
                         pass
 
-                    if ftype == 'existent':
+                    if ftype == EXISTENT:
                         if posix.O_EXCL in flags and posix.O_CREAT in flags:
                             # O_EXCL and O_CREAT are set
                             msg = "open - opening existent file should return an error when O_EXCL|O_CREAT is used"
@@ -1092,7 +1098,7 @@ class PosixTest(TestUtil):
                     if opened:
                         self.dprint('DBG7', "Close file %s" % filename)
                         posix.close(fd)
-                    if tryopen and ftype == 'non-existent' and (opened or os.path.exists(self.absfile)):
+                    if tryopen and ftype == NONEXISTENT and (opened or os.path.exists(self.absfile)):
                         # Remove file so the file does not exist
                         # for next iteration
                         self.dprint('DBG5', "Removing file [%s]" % self.absfile)
