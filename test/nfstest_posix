@@ -970,19 +970,29 @@ class PosixTest(TestUtil):
         iosize = 1024
         EXISTENT    = 1
         NONEXISTENT = 2
+        SYMLINK     = 3
         fmap = {
             EXISTENT    : 'existent file',
             NONEXISTENT : 'non-existent file',
+            SYMLINK     : 'symbolic link',
         }
 
-        for ftype in [NONEXISTENT, EXISTENT]:
+        for ftype in [NONEXISTENT, EXISTENT, SYMLINK]:
+            srcfile = None
             if ftype == NONEXISTENT:
                 # Get a new name for non-existent file
                 self.get_filename()
             else:
-                # Create file to use as existent file
+                # Create file to use as existent file or as the source file
+                # for the symbolic link
                 self.create_file()
                 os.chmod(self.absfile, 0777)
+                if ftype == SYMLINK:
+                    # Create symbolic link
+                    srcfile = self.absfile
+                    self.get_filename()
+                    self.dprint('DBG3', "Creating symbolic link file [%s -> %s]" % (self.absfile, srcfile))
+                    os.symlink(srcfile, self.absfile)
 
             # Get the name for file under test
             filename = os.path.basename(self.absfile)
@@ -997,8 +1007,8 @@ class PosixTest(TestUtil):
                         mode |= flag
 
                     perms = 0700 | random.randint(0,077)
-                    if perms == 0777 and ftype == EXISTENT:
-                        # Change open permissions to make it different that current
+                    if perms == 0777:
+                        # Change open permissions to make it different than current
                         # file permissions
                         perms = 0755
 
@@ -1026,29 +1036,33 @@ class PosixTest(TestUtil):
                     except OSError as e:
                         pass
 
-                    if ftype == EXISTENT:
+                    if ftype in [EXISTENT, SYMLINK]:
                         if posix.O_EXCL in flags and posix.O_CREAT in flags:
                             # O_EXCL and O_CREAT are set
-                            msg = "open - opening existent file should return an error when O_EXCL|O_CREAT is used"
+                            msg = "open - opening %s should return an error when O_EXCL|O_CREAT is used" % fmap[ftype]
                             self.test(e != None and e.errno == 17, msg, subtest=", flags %s" % flag_str)
                             continue
                         if posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
-                            msg = "open - opening existent file should return an error when O_DIRECTORY is used"
+                            msg = "open - opening %s should return an error when O_DIRECTORY is used" % fmap[ftype]
                             self.test(e != None and e.errno == 20, msg, subtest=", flags %s" % flag_str)
                             continue
                         if posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
                             # O_RDONLY and O_TRUNC are set
-                            msg = "open - opening existent file should be unspecified when O_RDONLY|O_TRUNC is used"
+                            msg = "open - opening %s should be unspecified when O_RDONLY|O_TRUNC is used" % fmap[ftype]
                             self.test(True, msg, subtest=", flags %s" % flag_str)
                             continue
+                        if posix.O_NOFOLLOW in flags and ftype == SYMLINK:
+                            msg = "open - opening %s should return an error when O_NOFOLLOW is used" % fmap[ftype]
+                            self.test(e != None and e.errno == 40, msg, subtest=", flags %s" % flag_str)
+                            continue
                         fstat = os.stat(self.absfile)
-                        msg = "open - opening existent file should succeed"
+                        msg = "open - opening %s should succeed" % fmap[ftype]
                         self.test(e == None, msg, subtest=" with flags %s" % flag_str)
                         if e:
                             # The open failed, move on to the next test
                             continue
-                        msg = "open - permission mode should not be changed when opening existent file"
+                        msg = "open - permission mode should not be changed when opening %s" % fmap[ftype]
                         self.test(fstat.st_mode & 0777 != perms, msg, subtest=", flags %s" % flag_str)
                     else:
                         if posix.O_CREAT in flags:
@@ -1060,7 +1074,7 @@ class PosixTest(TestUtil):
                             self.test(fstat.st_mode & 0777 == perms, msg, subtest=", flags %s" % flag_str)
                         else:
                             # O_CREAT is not set
-                            msg = "open - opening non-existent file should return an error when O_CREAT is not used"
+                            msg = "open - opening %s should return an error when O_CREAT is not used" % fmap[ftype]
                             self.test(e != None and e.errno == 2, msg, subtest=", flags %s" % flag_str)
                             continue
 
@@ -1072,10 +1086,10 @@ class PosixTest(TestUtil):
                         pass
 
                     if is_write_allowed:
-                        msg = "open - writing file should succeed when opening file with O_WRONLY or O_RDWR"
+                        msg = "open - writing should succeed when opening with O_WRONLY or O_RDWR"
                         self.test(ioe == None, msg, subtest=", flags %s" % flag_str)
                     else:
-                        msg = "open - writing file should return an error when opening file with O_RDONLY"
+                        msg = "open - writing should return an error when opening with O_RDONLY"
                         self.test(ioe != None and ioe.errno == 9, msg, subtest=", flags %s" % flag_str)
 
                     try:
@@ -1086,10 +1100,10 @@ class PosixTest(TestUtil):
                         pass
 
                     if is_read_allowed:
-                        msg = "open - reading file should succeed when opening file with O_RDONLY or O_RDWR"
+                        msg = "open - reading should succeed when opening with O_RDONLY or O_RDWR"
                         self.test(ioe == None, msg, subtest=", flags %s" % flag_str)
                     else:
-                        msg = "open - reading file should return an error when opening file with O_WRONLY"
+                        msg = "open - reading should return an error when opening with O_WRONLY"
                         self.test(ioe != None and ioe.errno == 9, msg, subtest=", flags %s" % flag_str)
 
                 except Exception:
