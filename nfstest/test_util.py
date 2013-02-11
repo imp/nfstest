@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -589,30 +589,102 @@ class TestUtil(NFSUtil):
 
     def _tverbose(self):
         """Display test group message as a PASS/FAIL including the number
-           of tests that passed and failed within this test group.
+           of tests that passed and failed within this test group when the
+           tverbose option is set to 'group' or level 0. It also groups all
+           test messages belonging to the same sub-group when the tverbose
+           option is set to 'normal' or level 1.
         """
         if self.tverbose == 0 and len(self.test_msgs) > 0:
+            # Get the count for each type of message within the
+            # current test group
             gcounts = {}
             for tid in _test_map:
                 gcounts[tid] = 0
             for item in self.test_msgs[-1]:
                 gcounts[item[0]] += 1
             (total, tmsg) = self._total_counts(gcounts)
+            # Fail the current test group if at least one of the tests within
+            # this group fails
             tid = FAIL if gcounts[FAIL] > 0 else PASS
+            # Just add the test group as a single test entity in the total count
             self._msg_count[tid] += 1
+            # Just display the test group message with the count of tests
+            # that passed and failed within this test group
             msg = self.test_msgs[-1][0][1].replace("\n", "\n          ")
             self._print_msg(msg + tmsg, tid)
             sys.stdout.flush()
+        elif self.tverbose == 1 and len(self.test_msgs) > 0:
+            # Process all sub-groups within the current test group
+            group = self.test_msgs[-1]
+            for subroup in group:
+                sgtid = subroup[0]
+                msg = subroup[1]
+                subtests = subroup[2]
+                if len(subtests) == 0:
+                    # Nothing to process, there are no subtests
+                    continue
+                # Get the count for each type of message within this
+                # test sub-group
+                gcounts = {}
+                for tid in _test_map:
+                    gcounts[tid] = 0
+                for subtest in subtests:
+                    gcounts[subtest[0]] += 1
+                (total, tmsg) = self._total_counts(gcounts)
+                # Just add the test sub-group as a single test entity in the
+                # total count
+                self._msg_count[sgtid] += 1
+                # Just display the test group message with the count of tests
+                # that passed and failed within this test group
+                msg = msg.replace("\n", "\n          ")
+                self._print_msg(msg + tmsg, sgtid)
+                sys.stdout.flush()
         self._test_time()
 
-    def _test_msg(self, tid, msg):
+    def _subgroup_id(self, subgroup, tid):
+        """Internal method to return the index of the sub-group message"""
+        index = 0
+        grpid = None
+        # Search the given message in all the sub-group messages
+        # within the current group
+        group = self.test_msgs[-1]
+        for item in group:
+            if subgroup == item[1]:
+                # Sub-group message found
+                grpid = index
+                break
+            index += 1
+        if grpid is None:
+            # Sub-group not found, add it
+            grpid = len(group)
+            group.append([tid, subgroup, []])
+        return grpid
+
+    def _test_msg(self, tid, msg, subtest=None, failmsg=None):
         """Common method to display and group test messages."""
         if len(self.test_msgs) == 0 or tid == HEAD:
+            # This is the first test message or the start of a group,
+            # so process the previous group if any and create a placeholder
+            # for the current group
             self._tverbose()
             self.test_msgs.append([])
-        self.test_msgs[-1].append([tid, msg])
-        if self.tverbose:
+        # Match the given message to a sub-group or add it if no match
+        grpid = self._subgroup_id(msg, tid)
+        if subtest is not None:
+            # A subtest is given so added to the proper sub-group
+            subgroup = self.test_msgs[-1][grpid]
+            subgroup[2].append([tid, subtest])
+            if subgroup[0] == PASS and tid == FAIL:
+                # Subtest failed so fail the subgroup
+                subgroup[0] = FAIL
+        if self.tverbose == 2 or (self.tverbose == 1 and subtest is None):
+            # Display the test message if tverbose flag is set to verbose(2)
+            # or if there is no subtest when tverbose is set to normal(1)
             self._msg_count[tid] += 1
+            if subtest is not None:
+                msg += subtest
+            if failmsg is not None and tid == FAIL:
+                msg += failmsg
             msg = msg.replace("\n", "\n          ")
             self._print_msg(msg, tid)
 
@@ -647,7 +719,15 @@ class TestUtil(NFSUtil):
         self._test_msg(INFO, msg)
 
     def test_group(self, msg):
-        """Display heading message and start a test group."""
+        """Display heading message and start a test group.
+
+           If tverbose=group or level 0:
+               Group message is displayed as a PASS/FAIL message including the
+               number of tests that passed and failed within this test group.
+           If tverbose=normal|verbose or level 1|2:
+               Group message is displayed as a heading messages for the tests
+               belonging to this test group.
+        """
         self._test_msg(HEAD, msg)
 
     def warning(self, msg):
@@ -655,7 +735,7 @@ class TestUtil(NFSUtil):
         if self.warnings:
             self._test_msg(WARN, msg)
 
-    def test(self, expr, msg, terminate=False, failmsg=None):
+    def test(self, expr, msg, subtest=None, failmsg=None, terminate=False):
         """Test expr and display message as PASS/FAIL, terminate execution
            if terminate option is True.
 
@@ -664,14 +744,22 @@ class TestUtil(NFSUtil):
                otherwise as a FAIL message
            msg:
                Message to display
-           terminate:
-               Terminate execution if true and expr is false [default: False]
+           subtest:
+               If given, append this string to the displayed message and
+               mark this test as a member of the sub-group given by msg
            failmsg:
                If given, append this string to the displayed message when
                expr is false [default: None]
+           terminate:
+               Terminate execution if true and expr is false [default: False]
+
+           If tverbose=normal or level 1:
+               Sub-group message is displayed as a PASS/FAIL message including
+               the number of tests that passed and failed within the sub-group
+           If tverbose=verbose or level 2:
+               All tests messages are displayed
         """
         tid = PASS if expr else FAIL
-        msg += failmsg if tid == FAIL and failmsg != None else ""
         if len(self._bugmsgs):
             for tmsg in self._bugmsgs:
                 if re.search(tmsg, msg):
@@ -684,9 +772,10 @@ class TestUtil(NFSUtil):
                         tid = BUG  if tid == FAIL else tid
                         # Count as a failure if bugmsgs is set and the test actually passed
                         tid = FAIL if tid == PASS else tid
-                        msg += " -- test actually PASSed but failing because --bugmsgs is used" if tid == FAIL else ""
+                        if tid == FAIL:
+                            failmsg = " -- test actually PASSed but failing because --bugmsgs is used"
                     break
-        self._test_msg(tid, msg)
+        self._test_msg(tid, msg, subtest=subtest, failmsg=failmsg)
         if tid == FAIL and terminate:
             self.exit()
 
