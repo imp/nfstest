@@ -1037,8 +1037,6 @@ class PosixTest(TestUtil):
                     if posix.O_EXCL in flags and posix.O_CREAT not in flags:
                         # The behavior of O_EXCL is undefined if O_CREAT is not specified
                         continue
-                    if not is_write_allowed and posix.O_EXCL in flags:
-                        continue
 
                     if ftype in [EXISTENT, SYMLINK]:
                         # Get file stats before open
@@ -1064,32 +1062,27 @@ class PosixTest(TestUtil):
                             (expr, fmsg) = self._oserror(openerr, errno.EEXIST)
                             msg = "open - opening %s should return an error when O_EXCL|O_CREAT is used" % fmap[ftype]
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
-                            continue
-                        if posix.O_DIRECTORY in flags:
+                        elif posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
                             (expr, fmsg) = self._oserror(openerr, errno.ENOTDIR)
                             msg = "open - opening %s should return an error when O_DIRECTORY is used" % fmap[ftype]
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
-                            continue
-                        if posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
+                        elif posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
                             # O_RDONLY and O_TRUNC are set
                             msg = "open - opening %s should be unspecified when O_RDONLY|O_TRUNC is used" % fmap[ftype]
                             self.test(True, msg, subtest=", flags %s" % flag_str)
-                            continue
-                        if posix.O_NOFOLLOW in flags and ftype == SYMLINK:
+                        elif posix.O_NOFOLLOW in flags and ftype == SYMLINK:
                             (expr, fmsg) = self._oserror(openerr, errno.ELOOP)
                             msg = "open - opening %s should return an error when O_NOFOLLOW is used" % fmap[ftype]
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
-                            continue
-                        msg = "open - opening %s should succeed" % fmap[ftype]
-                        self.test(openerr is None, msg, subtest=" with flags %s" % flag_str, failmsg=strerror)
-                        if openerr:
-                            # The open failed, move on to the next test
-                            continue
-                        expr = fstat.st_mode & 0777 == ofstat.st_mode & 0777
-                        msg = "open - permission mode should not be changed when opening %s" % fmap[ftype]
-                        fmsg = ": changed from %04o to %04o" % (ofstat.st_mode & 0777, fstat.st_mode & 0777)
-                        self.test(expr, msg, subtest=" with flags %s" % flag_str, failmsg=fmsg)
+                        else:
+                            msg = "open - opening %s should succeed" % fmap[ftype]
+                            self.test(openerr is None, msg, subtest=" with flags %s" % flag_str, failmsg=strerror)
+                            if not openerr:
+                                expr = fstat.st_mode & 0777 == ofstat.st_mode & 0777
+                                msg = "open - permission mode should not be changed when opening %s" % fmap[ftype]
+                                fmsg = ": changed from %04o to %04o" % (ofstat.st_mode & 0777, fstat.st_mode & 0777)
+                                self.test(expr, msg, subtest=" with flags %s" % flag_str, failmsg=fmsg)
                     else:
                         if posix.O_CREAT in flags:
                             # O_CREAT is set
@@ -1104,7 +1097,12 @@ class PosixTest(TestUtil):
                             (expr, fmsg) = self._oserror(openerr, errno.ENOENT)
                             msg = "open - opening %s should return an error when O_CREAT is not used" % fmap[ftype]
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
-                            continue
+
+                    if openerr:
+                        if not is_write_allowed and posix.O_EXCL in flags:
+                            msg = "open - opening %s should be unspecified when O_RDONLY|O_EXCL" % fmap[ftype]
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
+                        continue
 
                     wdata = self.data_pattern(0, iosize)
                     try:
