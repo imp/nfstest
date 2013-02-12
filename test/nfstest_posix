@@ -1031,10 +1031,6 @@ class PosixTest(TestUtil):
                     is_write_allowed = posix.O_WRONLY in flags or posix.O_RDWR in flags
                     is_read_allowed = posix.O_WRONLY not in flags or posix.O_RDWR in flags
 
-                    # Check for invalid combinations
-                    if posix.O_DIRECTORY in flags and posix.O_CREAT in flags:
-                        continue
-
                     if ftype in [EXISTENT, SYMLINK]:
                         # Get file stats before open
                         ofstat = os.stat(self.absfile)
@@ -1061,6 +1057,9 @@ class PosixTest(TestUtil):
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
                         elif openerr and posix.O_EXCL in flags and posix.O_CREAT not in flags:
                             msg = "open - opening %s should be unspecified when O_EXCL is used and O_CREAT is not specified" % fmap[ftype]
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
+                        elif posix.O_DIRECTORY in flags and posix.O_CREAT in flags:
+                            msg = "open - opening %s should be unspecified when O_DIRECTORY|O_CREAT is used" % ftype
                             self.test(True, msg, subtest=", flags %s" % flag_str)
                         elif posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
