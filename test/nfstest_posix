@@ -1034,9 +1034,6 @@ class PosixTest(TestUtil):
                     # Check for invalid combinations
                     if posix.O_DIRECTORY in flags and posix.O_CREAT in flags:
                         continue
-                    if posix.O_EXCL in flags and posix.O_CREAT not in flags:
-                        # The behavior of O_EXCL is undefined if O_CREAT is not specified
-                        continue
 
                     if ftype in [EXISTENT, SYMLINK]:
                         # Get file stats before open
@@ -1062,6 +1059,9 @@ class PosixTest(TestUtil):
                             (expr, fmsg) = self._oserror(openerr, errno.EEXIST)
                             msg = "open - opening %s should return an error when O_EXCL|O_CREAT is used" % fmap[ftype]
                             self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
+                        elif openerr and posix.O_EXCL in flags and posix.O_CREAT not in flags:
+                            msg = "open - opening %s should be unspecified when O_EXCL is used and O_CREAT is not specified" % fmap[ftype]
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
                         elif posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
                             (expr, fmsg) = self._oserror(openerr, errno.ENOTDIR)
