@@ -1103,6 +1103,12 @@ class PosixTest(TestUtil):
                             self.test(True, msg, subtest=", flags %s" % flag_str)
                         continue
 
+                    if posix.O_TRUNC in flags:
+                        expr = fstat.st_size == 0
+                        msg = "open - file size should be 0 after open when O_TRUNC is used"
+                        fmsg = ": file size = %d" % fstat.st_size
+                        self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
+
                     wdata = self.data_pattern(0, iosize)
                     try:
                         ioerr = None
@@ -1111,6 +1117,10 @@ class PosixTest(TestUtil):
                         pass
                     wstrerror = ": %s" % ioerr.strerror if ioerr else ""
 
+                    if not ioerr:
+                        # Get file stats after write
+                        nfstat = posix.fstat(fd)
+
                     if is_write_allowed:
                         if ioerr and posix.O_WRONLY in flags and posix.O_RDWR in flags:
                             msg = "open - writing should be unspecified when opening with O_WRONLY|O_RDWR"
@@ -1118,6 +1128,16 @@ class PosixTest(TestUtil):
                         else:
                             msg = "open - writing should succeed when opening with O_WRONLY or O_RDWR"
                             self.test(ioerr is None, msg, subtest=", flags %s" % flag_str, failmsg=wstrerror)
+                            if posix.O_TRUNC in flags:
+                                expr = nfstat.st_size == iosize
+                                msg = "open - data should be written at the beginning of file when O_TRUNC is used"
+                                fmsg = ": expecting file size = %d, got %d" % (iosize, nfstat.st_size)
+                                self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
+                            elif posix.O_APPEND in flags:
+                                expr = nfstat.st_size == fstat.st_size + iosize
+                                msg = "open - data should be written at the end of file when O_APPEND is used"
+                                fmsg = ": expecting file size = %d, got %d" % (fstat.st_size + iosize, nfstat.st_size)
+                                self.test(expr, msg, subtest=", flags %s" % flag_str, failmsg=fmsg)
                     else:
                         (expr, fmsg) = self._oserror(ioerr, errno.EBADF)
                         msg = "open - writing should return an error when opening with O_RDONLY"
