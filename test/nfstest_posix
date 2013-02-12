@@ -1037,8 +1037,6 @@ class PosixTest(TestUtil):
                     if posix.O_EXCL in flags and posix.O_CREAT not in flags:
                         # The behavior of O_EXCL is undefined if O_CREAT is not specified
                         continue
-                    if posix.O_WRONLY in flags and posix.O_RDWR in flags:
-                        continue
                     if not is_write_allowed and posix.O_EXCL in flags:
                         continue
 
@@ -1117,8 +1115,12 @@ class PosixTest(TestUtil):
                     wstrerror = ": %s" % ioerr.strerror if ioerr else ""
 
                     if is_write_allowed:
-                        msg = "open - writing should succeed when opening with O_WRONLY or O_RDWR"
-                        self.test(ioerr is None, msg, subtest=", flags %s" % flag_str, failmsg=wstrerror)
+                        if ioerr and posix.O_WRONLY in flags and posix.O_RDWR in flags:
+                            msg = "open - writing should be unspecified when opening with O_WRONLY|O_RDWR"
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
+                        else:
+                            msg = "open - writing should succeed when opening with O_WRONLY or O_RDWR"
+                            self.test(ioerr is None, msg, subtest=", flags %s" % flag_str, failmsg=wstrerror)
                     else:
                         (expr, fmsg) = self._oserror(ioerr, errno.EBADF)
                         msg = "open - writing should return an error when opening with O_RDONLY"
@@ -1133,8 +1135,12 @@ class PosixTest(TestUtil):
                     rstrerror = ": %s" % ioerr.strerror if ioerr else ""
 
                     if is_read_allowed:
-                        msg = "open - reading should succeed when opening with O_RDONLY or O_RDWR"
-                        self.test(ioerr is None, msg, subtest=", flags %s" % flag_str, failmsg=rstrerror)
+                        if ioerr and posix.O_WRONLY in flags and posix.O_RDWR in flags:
+                            msg = "open - reading should be unspecified when opening with O_WRONLY|O_RDWR"
+                            self.test(True, msg, subtest=", flags %s" % flag_str)
+                        else:
+                            msg = "open - reading should succeed when opening with O_RDONLY or O_RDWR"
+                            self.test(ioerr is None, msg, subtest=", flags %s" % flag_str, failmsg=rstrerror)
                     else:
                         (expr, fmsg) = self._oserror(ioerr, errno.EBADF)
                         msg = "open - reading should return an error when opening with O_WRONLY"
