@@ -130,7 +130,7 @@ class Host(BaseObj):
 
     def sudo_cmd(self, cmd):
         """Prefix the SUDO command if effective user is not root."""
-        if os.getuid != 0:
+        if os.getuid() != 0:
             # Not root -- prefix sudo command
             cmd = self.sudo + ' ' + cmd
         return cmd
