@@ -530,7 +530,27 @@ class pNFSTest(TestUtil):
                         da_addr_body = gdir_device.da_addr_body
                         self.stripe_indices = da_addr_body.nflda_stripe_indices
                         nindices = len(self.stripe_indices)
-                        multipath_ds_list = da_addr_body.nflda_multipath_ds_list
+                        mp_ds_list = da_addr_body.nflda_multipath_ds_list
+                        ds_index = 0
+                        if multipath_ds_list:
+                            # Make sure only connect to dataservers which have
+                            # not yet connected -- when the deviceid is
+                            # different but has some dataservers which have
+                            # a connection already
+                            need_getdev = False
+                            for ds_list in mp_ds_list:
+                                for dsentry in ds_list:
+                                    dsfound = False
+                                    if len(nocreate_list) <= ds_index:
+                                        nocreate_list.append(nocreate)
+                                    for dslist in multipath_ds_list:
+                                        for ds_entry in dslist:
+                                            if dsentry.na_r_netid == ds_entry.na_r_netid and dsentry.na_r_addr == ds_entry.na_r_addr:
+                                                dsfound = True
+                                    if not dsfound:
+                                        nocreate_list[ds_index] = False
+                                    ds_index += 1
+                        multipath_ds_list = mp_ds_list
                 else:
                     self.test(False, "GETDEVICEINFO reply was not found")
 
