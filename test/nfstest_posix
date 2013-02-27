@@ -775,7 +775,8 @@ class PosixTest(TestUtil):
         self.test(fstat.st_nlink == nlink, "%s - %s st_nlink should be equal to %d" % (op_str, type, nlink), failmsg=", expecting %d and got %d" % (nlink, fstat.st_nlink))
         self.test(fstat.st_uid == os.getuid(), "%s - %s st_uid should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (os.getuid(), fstat.st_uid))
         self.test(fstat.st_gid == os.getgid(), "%s - %s st_gid should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (os.getgid(), fstat.st_gid))
-        self.test(fstat.st_size == size, "%s - %s st_size should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (size, fstat.st_size))
+        expr = (fstat.st_size == size) if type == 'file' else True
+        self.test(expr, "%s - %s st_size should be correct" % (op_str, type), failmsg=", expecting %d and got %d" % (size, fstat.st_size))
         self.test(fstat.st_ino != None, "%s - %s st_ino should be returned" % (op_str, type))
         self.test(fstat.st_dev != None, "%s - %s st_dev should be returned" % (op_str, type))
         self.test(fstat.st_atime != None, "%s - %s st_atime should be returned" % (op_str, type))
