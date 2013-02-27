@@ -281,7 +281,10 @@ class pNFSTest(TestUtil):
             index += 1
             nio_total += nio
         if nio_total == 0:
-            self.test(False, "%s should have been sent to at least one DS" % io_str)
+            if iomode == LAYOUTIOMODE4_READ and stid_str == 'DELEG' and openfh['deleg_type'] == OPEN_DELEGATE_WRITE:
+                self.test(True, "%s should not be sent to DS when holding a write delegation" % io_str)
+            else:
+                self.test(False, "%s should have been sent to at least one DS" % io_str)
             return
 
         # Get stateid messages
