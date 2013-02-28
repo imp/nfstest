@@ -91,7 +91,7 @@ class Host(BaseObj):
            datadir:
                Data directory where files are created [default: '']
            mtopts:
-               Mount options [default: 'hard,intr,rsize=4096,wsize=4096']
+               Mount options [default: 'hard,rsize=4096,wsize=4096']
            interface:
                Network device interface [default: 'eth0']
            nomount:
@@ -337,15 +337,10 @@ class Host(BaseObj):
         # Using the proper version of NFS
         minorversion_str = ""
         if nfsversion == 4:
-            nfstype = 'nfs4'
-            nfsver = ''
             minorversion_str = "minorversion=%d," % minorversion
-        else:
-            nfstype = 'nfs'
-            nfsver = 'nfsvers=%d,' % nfsversion
 
         # Mount command
-        cmd = "mount -t %s -o %s%s%sport=%d %s:%s %s" % (nfstype, minorversion_str, nfsver, mtopts, port, server, export, mtpoint)
+        cmd = "mount -o vers=%d,%s%sport=%d %s:%s %s" % (nfsversion, minorversion_str, mtopts, port, server, export, mtpoint)
         self.run_cmd(cmd, sudo=True, dlevel='DBG2', msg="Mount volume: ")
 
         self.mounted = True
