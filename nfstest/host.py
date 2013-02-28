@@ -351,6 +351,10 @@ class Host(BaseObj):
         self.mounted = True
         self.mtpoint = mtpoint
 
+        # Create data directory if it does not exist
+        if not os.path.exists(self.mtdir):
+            os.mkdir(self.mtdir, 0777)
+
         # Return the mount point
         return mtpoint
 
