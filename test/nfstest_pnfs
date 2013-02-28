@@ -421,6 +421,10 @@ class pNFSTest(TestUtil):
 
         self.session_ids = []
 
+        if len(multipath_ds_list) == 0:
+            # Clear list of device ids
+            self.deviceids = {}
+
         if not nocreate:
             # Verify NFSv4.1 create session to MDS
             self.verify_create_session(self.server_ipaddr, self.port)
