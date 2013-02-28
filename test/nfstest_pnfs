@@ -234,6 +234,7 @@ class pNFSTest(TestUtil):
                 addr_list = item.na_r_addr.split('.')
                 ipaddr = '.'.join(addr_list[:4])
                 port = (int(addr_list[4])<<8) + int(addr_list[5])
+                self.dprint('DBG2', "DataServer(%d) ipaddr: %s, port: %d" % (ds_index, ipaddr, port))
 
                 # Rewind trace file to saved packet index
                 self.pktt.rewind(save_index)
