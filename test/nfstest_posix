@@ -1061,7 +1061,7 @@ class PosixTest(TestUtil):
                             msg = "open - opening %s should be unspecified when O_EXCL is used and O_CREAT is not specified" % fmap[ftype]
                             self.test(True, msg, subtest=flag_str)
                         elif posix.O_DIRECTORY in flags and posix.O_CREAT in flags:
-                            msg = "open - opening %s should be unspecified when O_DIRECTORY|O_CREAT is used" % ftype
+                            msg = "open - opening %s should be unspecified when O_DIRECTORY|O_CREAT is used" % fmap[ftype]
                             self.test(True, msg, subtest=flag_str)
                         elif posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
