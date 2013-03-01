@@ -1044,6 +1044,7 @@ class PosixTest(TestUtil):
                         fd = posix.open(self.absfile, mode, perms)
                         opened = True
                     except OSError as openerr:
+                        self.dprint('DBG7', "Open error: %s" % openerr.strerror)
                         pass
                     strerror = ": %s" % openerr.strerror if openerr else ""
 
