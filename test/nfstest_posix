@@ -1067,6 +1067,8 @@ class PosixTest(TestUtil):
                         elif posix.O_DIRECTORY in flags:
                             # O_DIRECTORY is set
                             (expr, fmsg) = self._oserror(openerr, errno.ENOTDIR)
+                            if not expr and ftype == SYMLINK:
+                                (expr, fmsg) = self._oserror(openerr, errno.ELOOP)
                             msg = "open - opening %s should return an error when O_DIRECTORY is used" % fmap[ftype]
                             self.test(expr, msg, subtest=flag_str, failmsg=fmsg)
                         elif posix.O_WRONLY not in flags and posix.O_RDWR not in flags and posix.O_TRUNC in flags:
