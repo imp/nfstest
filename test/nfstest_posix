@@ -1079,6 +1079,9 @@ class PosixTest(TestUtil):
                             (expr, fmsg) = self._oserror(openerr, errno.ELOOP)
                             msg = "open - opening %s should return an error when O_NOFOLLOW is used" % fmap[ftype]
                             self.test(expr, msg, subtest=flag_str, failmsg=fmsg)
+                        elif posix.O_NOATIME in flags and openerr:
+                            msg = "open - opening %s should be unspecified when O_NOATIME is used" % fmap[ftype]
+                            self.test(True, msg, subtest=wflag_str)
                         else:
                             msg = "open - opening %s should succeed" % fmap[ftype]
                             self.test(openerr is None, msg, subtest=wflag_str, failmsg=strerror)
