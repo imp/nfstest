@@ -434,7 +434,7 @@ class pNFSTest(TestUtil):
 
         # Find OPEN request
         self.dprint('DBG2', "Find OPEN for file %s" % filename)
-        (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename)
+        (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename, claimfh=openfh.get('fh'), anyclaim=True)
         if deleg_stateid:
             deleg_type = self.pktt.pkt.NFSop.delegation.delegation_type
         else:
@@ -846,7 +846,7 @@ class pNFSTest(TestUtil):
                 else:
                     # Client should send another open
                     delegreturn = False
-                    openfh.pop('filehandle')
+                    openfh['fh'] = openfh.pop('filehandle')
                     openfh.pop('open_stateid')
 
                 self.test_group("Verify traffic for first file opened again using pNFS within the same mount - %s" % swstr)
