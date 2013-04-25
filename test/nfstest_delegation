@@ -298,7 +298,7 @@ class DelegTest(TestUtil):
         try:
             self.trace_open()
 
-            (fh, op_stid, deleg_stid) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_type)
+            (fh, op_stid, deleg_stid) = self.find_open(filename=self.filename, deleg_type=deleg_type)
             self.test(deleg_stid != None, "%s delegation should be granted" % mode_str)
             save_index = self.pktt.index
             if deleg_stid is None:
@@ -313,7 +313,7 @@ class DelegTest(TestUtil):
                 filehandles = loc_body['filehandles']
 
             # Find any other OPEN's for the same file
-            olist = self.find_open(self.filename, self.server_ipaddr, self.port)
+            olist = self.find_open(filename=self.filename)
             self.test(olist[0] is None, "OPEN's should not be sent for the same file")
 
             # Rewind trace file to saved packet index
@@ -417,7 +417,7 @@ class DelegTest(TestUtil):
 
         try:
             self.trace_open()
-            (fh, op_stid, deleg_stid) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_type, src_ipaddr=self.client_ipaddr)
+            (fh, op_stid, deleg_stid) = self.find_open(filename=self.filename, deleg_type=deleg_type, src_ipaddr=self.client_ipaddr)
             self.test(deleg_stid != None, "%s delegation should be granted" % mode_str)
             save_index = self.pktt.index
             if deleg_stid is None:
@@ -433,7 +433,7 @@ class DelegTest(TestUtil):
 
             if deleg_type == OPEN_DELEGATE_READ:
                 # Find OPEN (READ) call from the second client
-                (fh1, op_stid1, deleg_stid1) = self.find_open(self.filename, self.server_ipaddr, self.port, src_ipaddr=self.clientobj.ipaddr)
+                (fh1, op_stid1, deleg_stid1) = self.find_open(filename=self.filename, src_ipaddr=self.clientobj.ipaddr)
                 save_index = self.pktt.index
 
             # Find OPEN call from the second client
@@ -477,7 +477,7 @@ class DelegTest(TestUtil):
             self.test(cbcall.NFSop.stateid.other == deleg_stid, "CB_RECALL should recall %s delegation granted to client" % mode_str)
 
             # Find OPEN sent from the client right before returning the delegation
-            (fh, op_stid2, deleg_stid2) = self.find_open(self.filename, self.server_ipaddr, self.port, deleg_stateid=deleg_stid, src_ipaddr=self.client_ipaddr)
+            (fh, op_stid2, deleg_stid2) = self.find_open(filename=self.filename, deleg_stateid=deleg_stid, src_ipaddr=self.client_ipaddr)
             open_index = self.pktt.index
             self.test(op_stid2 != None, "OPEN with CLAIM_DELEGATE_CUR is sent from client right before returning the %s delegation after CB_RECALL" % mode_str)
             self.test(op_stid2 == op_stid, "OPEN stateid should be the same as the original OPEN stateid")

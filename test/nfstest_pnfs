@@ -434,7 +434,7 @@ class pNFSTest(TestUtil):
 
         # Find OPEN request
         self.dprint('DBG2', "Find OPEN for file %s" % filename)
-        (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+        (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename)
         if deleg_stateid:
             deleg_type = self.pktt.pkt.NFSop.delegation.delegation_type
         else:
@@ -1124,7 +1124,7 @@ class pNFSTest(TestUtil):
 
             self.test(data == '\000' * self.rsize, "Client should read a hole at the beginning of the file after writing")
 
-            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename)
             (layoutget, layoutget_res, loc_body) = self.verify_layoutget(filehandle, LAYOUTIOMODE4_RW)
             (pktcall, pktreply, dslist) = self.find_getdeviceinfo()
             nds = len(dslist)
@@ -1246,7 +1246,7 @@ try:
             (pktcall, pktreply) = x.find_exchange_id()
             x.dprint('INFO', "Client implementation: %s" % x.nii_name)
             x.dprint('INFO', "Server implementation: %s" % x.nii_server)
-            (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[i], x.server_ipaddr, x.port)
+            (filehandle, open_stateid, deleg_stateid) = x.find_open(filename=x.files[i])
             x.stripe_size = x.find_layoutget(filehandle)[2]['stripe_size']
             x.find_getdeviceinfo()
             break

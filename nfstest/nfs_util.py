@@ -301,38 +301,68 @@ class NFSUtil(Host):
                 break
         return (pktcall, pktreply)
 
-    def find_open(self, filename, ipaddr, port, deleg_type=None, deleg_stateid=None, src_ipaddr=None, maxindex=None, anyclaim=False):
+    def find_open(self, **kwargs):
         """Find the call and its corresponding reply for the NFSv4 OPEN of the
            given file going to the server specified by the ipaddr and port.
 
            filename:
-               Find open call and reply for this file
+               Find open call and reply for this file [default: None]
+           claimfh:
+               Find open call and reply for this file handle [default: None]
            ipaddr:
-               Destination IP address
+               Destination IP address [default: self.server]
            port:
-               Destination port
+               Destination port [default: self.port]
            deleg_type:
-               Expected delegation type on reply
+               Expected delegation type on reply [default: None]
            deleg_stateid:
-               Delegation stateid expected on call in delegate_cur_info
+               Delegation stateid expected on call in delegate_cur_info [default: None]
            src_ipaddr:
                Source IP address [default: any IP address]
            maxindex:
                The match fails if packet index hits this limit [default: no limit]
            anyclaim:
-               Find open for either regular open or using delegate_cur_info
+               Find open for either regular open or using delegate_cur_info [default: False]
 
+           Must specify either filename, claimfh or both.
            Return a tuple: (filehandle, open_stateid, deleg_stateid).
         """
+        filename      = kwargs.pop('filename', None)
+        claimfh       = kwargs.pop('claimfh', None)
+        ipaddr        = kwargs.pop('ipaddr', self.server_ipaddr)
+        port          = kwargs.pop('port', self.port)
+        deleg_type    = kwargs.pop('deleg_type', None)
+        deleg_stateid = kwargs.pop('deleg_stateid', None)
+        src_ipaddr    = kwargs.pop('src_ipaddr', None)
+        maxindex      = kwargs.pop('maxindex', None)
+        anyclaim      = kwargs.pop('anyclaim', False)
+
         src = "IP.src == '%s' and " % src_ipaddr if src_ipaddr is not None else ''
         dst = self.pktt.ip_tcp_dst_expr(ipaddr, port)
-        if deleg_stateid is None:
+
+        file_str = ""
+        deleg_str = ""
+        claimfh_str = ""
+        str_list = []
+        if filename is not None:
             file_str = "NFS.claim.file == '%s'" % filename
-        else:
-            file_str = "NFS.claim.delegate_cur_info.file == '%s'" % filename
-            file_str += " and NFS.claim.delegate_cur_info.delegate_stateid.other == '%s'" % self.pktt.escape(deleg_stateid)
+            str_list.append(file_str)
+        if claimfh is not None:
+            claimfh_str = "(NFS.object == '%s' and NFS.claim.claim == %d)" % (self.pktt.escape(claimfh), CLAIM_FH)
+            str_list.append(claimfh_str)
+        if deleg_stateid is not None:
+            deleg_str = "(NFS.claim.delegate_cur_info.file == '%s'" % filename
+            deleg_str += " and NFS.claim.delegate_cur_info.delegate_stateid.other == '%s')" % self.pktt.escape(deleg_stateid)
+            str_list.append(deleg_str)
+
         if anyclaim:
-            file_str = "(NFS.claim.file == '%s' or NFS.claim.delegate_cur_info.file == '%s')" % (filename, filename)
+            file_str = " or ".join(str_list)
+        elif claimfh is not None:
+            file_str = claimfh_str
+        elif deleg_stateid is not None:
+            file_str = deleg_str
+        elif len(file_str) == 0:
+            raise Exception("Must specify either filename or claimfh")
 
         while True:
             pktcall = self.pktt.match(src + dst + " and NFS.argop == %d and %s" % (OP_OPEN, file_str), maxindex=maxindex)

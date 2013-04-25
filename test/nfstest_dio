@@ -466,7 +466,7 @@ class DioTest(TestUtil):
 
         try:
             self.trace_open()
-            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename, self.server_ipaddr, self.port)
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename)
             stateid = deleg_stateid if deleg_stateid else open_stateid
             idx = 0
             pkt = self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (OP_READ, self.pktt.escape(stateid)))
@@ -691,7 +691,7 @@ class DioTest(TestUtil):
         try:
             self.trace_open()
 
-            (filehandle, open_stateid, deleg_stateid) = self.find_open(file, self.server_ipaddr, self.port)
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=file)
             save_index = self.pktt.index
             if deleg_stateid != None:
                 self.dprint('DBG3', "Delegation is granted")
@@ -751,7 +751,7 @@ class DioTest(TestUtil):
 
             if buffered_write != None:
                 self.pktt.rewind()
-                (filehandle, open_stateid, deleg_stateid) = self.find_open(bfile, self.server_ipaddr, self.port)
+                (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=bfile)
                 stateid = deleg_stateid if deleg_stateid else open_stateid
                 (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
                 self.layout = loc_body
@@ -977,7 +977,7 @@ class DioTest(TestUtil):
         try:
             fd = None
             self.trace_open()
-            (filehandle, open_stateid, deleg_stateid) = self.find_open(file, self.server_ipaddr, self.port, anyclaim=True)
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=file, anyclaim=True)
             save_index = self.pktt.index
             if filehandle is None:
                 self.test(False, "Could not find OPEN for file")
@@ -1459,7 +1459,7 @@ try:
     x.setup(nfiles = 2)
     x.trace_stop()
     x.trace_open()
-    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[0], x.server_ipaddr, x.port)
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(filename=x.files[0])
     (layoutget, layoutget_res, loc_body) = x.find_layoutget(filehandle)
     x.find_getdeviceinfo()
     x.ispnfs = False if layoutget is None or len(x.dslist) == 0 else True
@@ -1489,10 +1489,10 @@ try:
     x.umount()
     x.trace_stop()
     x.trace_open()
-    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[1], x.server_ipaddr, x.port)
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(filename=x.files[1])
     x.read_deleg = False if deleg_stateid is None else True
     x.pktt.rewind()
-    (filehandle, open_stateid, deleg_stateid) = x.find_open(x.files[2], x.server_ipaddr, x.port)
+    (filehandle, open_stateid, deleg_stateid) = x.find_open(filename=x.files[2])
     x.write_deleg = False if deleg_stateid is None else True
     if not x.read_deleg:
         x.dprint('INFO', "READ  delegations are not available -- skipping tests expecting read  delegations")
