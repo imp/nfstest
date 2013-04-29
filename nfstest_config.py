@@ -99,6 +99,9 @@ def _find_exec(command):
 NFSTEST_TESTDIR = 'test'
 NFSTEST_MANDIR  = 'man'
 NFSTEST_USRMAN  = '/usr/share/man'
+NFSTEST_CONFIG  = '/etc/nfstest'
+NFSTEST_HOMECFG = os.path.join(os.environ.get('HOME',''), '.nfstest')
+NFSTEST_CWDCFG  = '.nfstest'
 NFSTEST_SCRIPTS = [
     'test/nfstest_cache',
     'test/nfstest_delegation',

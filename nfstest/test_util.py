@@ -193,6 +193,7 @@ class TestUtil(NFSUtil):
         self.dindent(4)
         self.device_info = {}
         self.dslist = []
+        self.optfiles = []
         NFSUtil.__init__(self)
         self._init_options()
 
@@ -320,7 +321,6 @@ class TestUtil(NFSUtil):
         if len(usage) > 0:
             self.opts.set_usage(usage)
         self._cmd_line = " ".join(sys.argv)
-        self._file_lines = []
         self._opts = {}
 
     @staticmethod
@@ -390,27 +390,54 @@ class TestUtil(NFSUtil):
              Must use the long name of the option (--<option_name>) in the file.
         """
         opts, args = self.opts.parse_args()
-        if opts.file and self._fileopt:
-            # Options are given in the options file
+        if self._fileopt:
+            # Find which options files exist and make sure not to process the
+            # same file twice, this is used for the case where HOMECFG and
+            # CWDCFG are the same, more specifically when environment variable
+            # HOME is not defined.
+            # Also, the precedence order is defined as follows:
+            #   1. options given in command line
+            #   2. options given in file specified by the -f|--file option
+            #   3. options given in file specified by ./.nfstest
+            #   4. options given in file specified by $HOME/.nfstest
+            #   5. options given in file specified by /etc/nfstest
+            ofiles = {}
+            self.optfiles = [[opts.file, []]] if opts.file else []
+            for optfile in [c.NFSTEST_CWDCFG, c.NFSTEST_HOMECFG, c.NFSTEST_CONFIG]:
+                if ofiles.get(optfile) is None:
+                    # Add file if it has not been added yet
+                    ofiles[optfile] = 1
+                    if os.path.exists(optfile):
+                        self.optfiles.insert(0, [optfile, []])
+        if self.optfiles and self._fileopt:
+            # Options are given in any of the options files
             self._fileopt = False # Only process the '--file' option once
-            index = 1
             argv = []
-            for line in open(opts.file, 'r'):
-                line = line.strip()
-                if len(line) == 0 or line[0] == '#':
-                    # Skip comments
-                    continue
-                self._file_lines.append(line)
-                m = re.search("([^=]+)=?(.*)", line)
-                name = m.group(1)
-                name = name.strip()
-                value = m.group(2)
-                if len(value) > 0:
-                    value = value.strip()
-                    argv.append("--%s=%s" % (name, value))
-                else:
-                    argv.append("--%s" % name)
-            # Add all other options in the command line
+            for (optfile, lines) in self.optfiles:
+                for optline in open(optfile, 'r'):
+                    line = optline.strip()
+                    if len(line) == 0 or line[0] == '#':
+                        # Skip comments
+                        continue
+                    # Save current line of file for displaying purposes
+                    lines.append(line)
+                    # Process valid options, option name and value is separated
+                    # by spaces or an equal sign
+                    m = re.search("([^=\s]+)\s*=?\s*(.*)", line)
+                    name = m.group(1)
+                    name = name.strip()
+                    value = m.group(2)
+                    # Add current option to argument list as if the option was
+                    # given on the command line to be able to use parse_args()
+                    # again to process all options given in the options files
+                    if len(value) > 0:
+                        value = value.strip()
+                        argv.append("--%s=%s" % (name, value))
+                    else:
+                        argv.append("--%s" % name)
+            # Add all other options in the command line, make sure all options
+            # explicitly given in the command line have higher precedence than
+            # options given in any of the options files
             sys.argv[1:] = argv + sys.argv[1:]
             # Process the command line arguments again to overwrite options
             # explicitly given in the command line in conjunction with the
@@ -428,10 +455,13 @@ class TestUtil(NFSUtil):
                 self.open_log(self.logfile)
 
             _lines = [self._cmd_line]
-            if len(self._file_lines) > 0:
-                _lines.append("")
-                _lines.append("Contents of options file [%s]:" % opts.file)
-            self.dprint('OPTS', "\n".join(_lines + self._file_lines))
+            for (optfile, lines) in self.optfiles:
+                # Add the content of each option file that has been processed
+                if len(lines) > 0:
+                    _lines.append("")
+                    _lines.append("Contents of options file [%s]:" % optfile)
+                    _lines += lines
+            self.dprint('OPTS', "\n".join(_lines))
             self.dprint('OPTS', "")
             for key in sorted(vars(opts)):
                 value = getattr(opts,key)
