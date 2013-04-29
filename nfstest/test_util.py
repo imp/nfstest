@@ -132,6 +132,10 @@ class TestUtil(NFSUtil):
 
            Initialize object's private data.
 
+           id:
+               Test script ID [default: '']
+               This is used to have options targeted for a given ID without
+               including these options in any other test script.
            usage:
                Usage string [default: '']
            testnames:
@@ -147,6 +151,7 @@ class TestUtil(NFSUtil):
                x.basic_test()
                x.lock_test()
         """
+        self.id        = kwargs.pop('id', "")
         self.usage     = kwargs.pop('usage', '')
         self.testnames = kwargs.pop('testnames', [])
         self.progname = os.path.basename(sys.argv[0])
@@ -414,13 +419,14 @@ class TestUtil(NFSUtil):
             self._fileopt = False # Only process the '--file' option once
             argv = []
             for (optfile, lines) in self.optfiles:
+                idblock = None
                 for optline in open(optfile, 'r'):
                     line = optline.strip()
                     if len(line) == 0 or line[0] == '#':
                         # Skip comments
                         continue
                     # Save current line of file for displaying purposes
-                    lines.append(line)
+                    lines.append(optline.rstrip())
                     # Process valid options, option name and value is separated
                     # by spaces or an equal sign
                     m = re.search("([^=\s]+)\s*=?\s*(.*)", line)
@@ -430,10 +436,21 @@ class TestUtil(NFSUtil):
                     # Add current option to argument list as if the option was
                     # given on the command line to be able to use parse_args()
                     # again to process all options given in the options files
-                    if len(value) > 0:
+                    if name == "}":
+                        # End of block
+                        idblock = None
+                    elif len(value) > 0:
                         value = value.strip()
-                        argv.append("--%s=%s" % (name, value))
-                    else:
+                        if value == "{":
+                            # Start of block
+                            idblock = name
+                        elif idblock is None or idblock == self.id:
+                            # Include all general options and options given
+                            # by the block specified by the correct script ID
+                            argv.append("--%s=%s" % (name, value))
+                    elif idblock is None or idblock == self.id:
+                        # Include all general options and options given
+                        # by the block specified by the correct script ID
                         argv.append("--%s" % name)
             # Add all other options in the command line, make sure all options
             # explicitly given in the command line have higher precedence than
