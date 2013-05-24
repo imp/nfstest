@@ -48,6 +48,7 @@ import sys
 import time
 import fcntl
 import struct
+import inspect
 import textwrap
 import traceback
 from host import Host
@@ -199,6 +200,7 @@ class TestUtil(NFSUtil):
         self.device_info = {}
         self.dslist = []
         self.optfiles = []
+        self.testopts = {}
         NFSUtil.__init__(self)
         self._init_options()
 
@@ -419,7 +421,9 @@ class TestUtil(NFSUtil):
             self._fileopt = False # Only process the '--file' option once
             argv = []
             for (optfile, lines) in self.optfiles:
+                bcount = 0
                 idblock = None
+                testblock = None
                 for optline in open(optfile, 'r'):
                     line = optline.strip()
                     if len(line) == 0 or line[0] == '#':
@@ -437,13 +441,34 @@ class TestUtil(NFSUtil):
                     # given on the command line to be able to use parse_args()
                     # again to process all options given in the options files
                     if name == "}":
-                        # End of block
-                        idblock = None
+                        # End of block, make sure to close an opened testblock
+                        # first before closing an opened idblock
+                        bcount -= 1
+                        if testblock is not None:
+                            testblock = None
+                        else:
+                            idblock = None
                     elif len(value) > 0:
                         value = value.strip()
                         if value == "{":
-                            # Start of block
-                            idblock = name
+                            # Start of block, make sure to open an idblock
+                            # first before opening a testblock
+                            bcount += 1
+                            if idblock is None:
+                                idblock = name
+                            elif idblock == self.id:
+                                # Open a testblock only if testblock is located
+                                # inside an idblock correspondig to script ID
+                                testblock = name
+                                if self.testopts.get(name) is None:
+                                    # Initialize testblock only if it has not
+                                    # been initialized, this allows for multiple
+                                    # definitions of the same testblock
+                                    self.testopts[name] = {}
+                        elif testblock is not None:
+                            # Inside a testblock, add name/value to testblock
+                            # dictionary
+                            self.testopts[testblock][name] = value
                         elif idblock is None or idblock == self.id:
                             # Include all general options and options given
                             # by the block specified by the correct script ID
@@ -452,6 +477,8 @@ class TestUtil(NFSUtil):
                         # Include all general options and options given
                         # by the block specified by the correct script ID
                         argv.append("--%s" % name)
+                if bcount != 0:
+                    self.config("Missing closing brace in options file '%s'" % optfile)
             # Add all other options in the command line, make sure all options
             # explicitly given in the command line have higher precedence than
             # options given in any of the options files
@@ -524,6 +551,40 @@ class TestUtil(NFSUtil):
             # Make sure the network is reset
             self.network_reset()
         return
+
+    def test_options(self, name=None):
+        """Get options for the given test name. If the test name is not given
+           it is determined by inspecting the stack to find which method is
+           calling this method.
+        """
+        if name is None:
+            # Get correct test name by inspecting the stack to find which
+            # method is calling this method
+            out = inspect.stack()
+            name = out[1][3].replace("_test", "")
+
+        # Get options given for this specific test name
+        opts = self.testopts.get(name, {})
+
+        # Find if any of the test options are regular expressions
+        for key in self.testopts.keys():
+            m = re.search("^re\((.*)\)$", key)
+            if m:
+                # Regular expression specified by re()
+                regex = m.group(1)
+            else:
+                # Find if regular expression is specified by the characters
+                # used in the name
+                m = re.search("[.^$?+\\\[\]()|]", key)
+                regex = key
+            if m and re.search(regex, name):
+                # Key is specified as a regular expression and matches
+                # the test name given, add these options to any options
+                # already given by static name match making sure the
+                # options given by the exact name are not overwritten
+                # by the ones found from a regular expression
+                opts = dict(self.testopts[key].items() + opts.items())
+        return opts
 
     def setup(self, nfiles=None):
         """Set up test environment.
