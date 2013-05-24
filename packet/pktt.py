@@ -377,7 +377,7 @@ class Pktt(BaseObj, Unpack):
            Valid opr values are: ==, !=, <, >, <=, >=, in
         """
         m = re.search(r"([^!=<>]+)\s*([!=<>]+|in)\s*(.*)", args)
-        lhs = m.group(1)
+        lhs = m.group(1).rstrip()
         opr = m.group(2)
         rhs = m.group(3)
         return (lhs, opr, rhs)
@@ -422,7 +422,10 @@ class Pktt(BaseObj, Unpack):
                 rhs = "not " + rhs
             expr = rhs[:-1] + ", str(" + obj + lhs +  "))"
         elif opr == 'in':
-            expr = lhs + ' ' + opr + ' ' + obj + rhs
+            if self.inlhs:
+                expr = obj + lhs + ' ' + opr + ' ' + rhs
+            else:
+                expr = lhs + ' ' + opr + ' ' + obj + rhs
         else:
             expr = obj + lhs + opr + rhs
 
@@ -615,6 +618,12 @@ class Pktt(BaseObj, Unpack):
             if data == 'in':
                 data = ' in '
                 isin = True
+                if ret[:5] == "self.":
+                    # LHS in the 'in' operator is a packet object
+                    self.inlhs = True
+                else:
+                    # LHS in the 'in' operator is a constant value
+                    self.inlhs = False
             ret += data
 
         if _token_map[ast[0]] == "comparison":
@@ -650,6 +659,9 @@ class Pktt(BaseObj, Unpack):
 
                # Find the next NFS EXCHANGE_ID request
                pkt = x.match("NFS.argop == 42")
+
+               # Find the next NFS EXCHANGE_ID or CREATE_SESSION request
+               pkt = x.match("NFS.argop in [42,43]")
 
                # Find the next NFS OPEN request or reply
                pkt = x.match("NFS.op == 18")
