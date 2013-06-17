@@ -392,6 +392,8 @@ class RPC(BaseObj, Unpack):
 
     def _rpc_credential(self):
         """Get the RPC credentials from the working buffer."""
+        if len(self.data) < 8:
+            return
         ret = Credential(
             flavor = self.unpack(4, 'I')[0],
             size   = self.unpack(4, 'I')[0],
