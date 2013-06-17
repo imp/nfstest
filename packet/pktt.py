@@ -734,7 +734,7 @@ class Pktt(BaseObj, Unpack):
         # Replace all double quotes to its corresponding hex value
         data = re.sub(r'"', r'\x22', repr(data)[1:-1])
         # Replace all single quotes to its corresponding hex value
-        data = re.sub(r"'", r'\x27', data)
+        data = re.sub(r"'", r'x27', data)
         # Escape all backslashes
         data = re.sub(r'\\', r'\\\\', data)
         return data
