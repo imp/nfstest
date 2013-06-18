@@ -31,7 +31,7 @@ from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -82,6 +82,8 @@ class Host(BaseObj):
                NFS version [default: 4]
            minorversion:
                NFS minor version [default: 1]
+           proto:
+               NFS protocol name [default: 'tcp']
            port:
                NFS server port [default: 2049]
            export:
@@ -107,6 +109,7 @@ class Host(BaseObj):
         self.server       = kwargs.pop("server",       '')
         self.nfsversion   = kwargs.pop("nfsversion",   c.NFSTEST_NFSVERSION)
         self.minorversion = kwargs.pop("minorversion", c.NFSTEST_MINORVERSION)
+        self.proto        = kwargs.pop("proto",        c.NFSTEST_NFSPROTO)
         self.port         = kwargs.pop("port",         c.NFSTEST_NFSPORT)
         self.export       = kwargs.pop("export",       c.NFSTEST_EXPORT)
         self.mtpoint      = kwargs.pop("mtpoint",      c.NFSTEST_MTPOINT)
@@ -116,7 +119,6 @@ class Host(BaseObj):
         self.nomount      = kwargs.pop("nomount",      False)
         self.iptables     = kwargs.pop("iptables",     c.NFSTEST_IPTABLES)
         self.sudo         = kwargs.pop("sudo",         c.NFSTEST_SUDO)
-        self.ipv6         = kwargs.pop("ipv6",         False)
         # Initialize object variables
         self.mounted = False
         self.process_list = []
@@ -126,7 +128,8 @@ class Host(BaseObj):
         self._invalidmtpoint = False
         self._localhost = False if len(self.host) > 0 else True
         self.fqdn = socket.getfqdn()
-        self.ipaddr = self.get_ip_address(host=self.host, ipv6=self.ipv6)
+        ipv6 = self.proto[-1] == '6'
+        self.ipaddr = self.get_ip_address(host=self.host, ipv6=ipv6)
 
     def sudo_cmd(self, cmd):
         """Prefix the SUDO command if effective user is not root."""
@@ -290,6 +293,8 @@ class Host(BaseObj):
                NFS version [default: self.nfsversion]
            minorversion:
                NFS minor version [default: self.minorversion]
+           proto:
+               NFS protocol name [default: self.proto]
            port:
                NFS server port [default: self.port]
            export:
@@ -307,6 +312,7 @@ class Host(BaseObj):
         server       = kwargs.pop("server",       self.server)
         nfsversion   = kwargs.pop("nfsversion",   self.nfsversion)
         minorversion = kwargs.pop("minorversion", self.minorversion)
+        proto        = kwargs.pop("proto",        self.proto)
         port         = kwargs.pop("port",         self.port)
         export       = kwargs.pop("export",       self.export)
         mtpoint      = kwargs.pop("mtpoint",      self.mtpoint)
@@ -340,7 +346,7 @@ class Host(BaseObj):
             minorversion_str = "minorversion=%d," % minorversion
 
         # Mount command
-        cmd = "mount -o vers=%d,%s%sport=%d %s:%s %s" % (nfsversion, minorversion_str, mtopts, port, server, export, mtpoint)
+        cmd = "mount -o vers=%d,%s%sproto=%s,port=%d %s:%s %s" % (nfsversion, minorversion_str, mtopts, proto, port, server, export, mtpoint)
         self.run_cmd(cmd, sudo=True, dlevel='DBG2', msg="Mount volume: ")
 
         self.mounted = True
@@ -408,6 +414,7 @@ class Host(BaseObj):
         """Get IP address associated with the given host name.
            This could be run as an instance or class method.
         """
+        ipstr = "v6" if ipv6 else "v4"
         family = socket.AF_INET6 if ipv6 else socket.AF_INET
         if len(host) == 0:
             host = socket.gethostname()
@@ -417,5 +424,5 @@ class Host(BaseObj):
             # Ignore loopback addresses
             if info[0] == family and info[4][0] not in ('127.0.0.1', '::1'):
                 return info[4][0]
-        raise Exception("Unable to get IP address for host '%s'" % host)
+        raise Exception("Unable to get IP%s address for host '%s'" % (ipstr, host))
 

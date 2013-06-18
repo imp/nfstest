@@ -59,7 +59,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -277,6 +277,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("-f", "--file", default="", help="Options file")
         self.opts.add_option("-s", "--server", default=self.server, help="Server name or IP address")
         self.opts.add_option("-p", "--port", type="int", default=self.port, help="NFS server port [default: %default]")
+        self.opts.add_option("--proto", default=self.proto, help="NFS protocol name [default: '%default']")
         self.opts.add_option("--nfsversion", type="int", default=self.nfsversion, help="NFS version [default: %default]")
         self.opts.add_option("--minorversion", type="int", default=self.minorversion, help="Minor version [default: %default]")
         self.opts.add_option("-e", "--export", default=self.export, help="Exported file system to mount [default: '%default']")
@@ -520,10 +521,12 @@ class TestUtil(NFSUtil):
             if not self.server:
                 self.opts.error("server option is required")
             self._verify_testnames()
+            ipv6 = self.proto[-1] == '6'
             # Get IP address of server
-            self.server_ipaddr = self.get_ip_address(host=self.server)
+            self.server_ipaddr = self.get_ip_address(host=self.server, ipv6=ipv6)
             # Get IP address of client
-            self.client_ipaddr = self.get_ip_address()
+            self.client_ipaddr = self.get_ip_address(ipv6=ipv6)
+            self.ipaddr = self.client_ipaddr
             if self.nfsversion < 4:
                 self.minorversion = 0
 
@@ -897,6 +900,7 @@ class TestUtil(NFSUtil):
             host    = host,
             user    = user,
             server  = self.server,
+            proto   = self.proto,
             port    = self.port,
             export  = self.export,
             mtpoint = self.mtpoint,
