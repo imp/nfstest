@@ -731,10 +731,21 @@ class Pktt(BaseObj, Unpack):
                # Call as a class
                escaped_data = Pktt.escape(data)
         """
+        # repr() can escape or not a single quote depending if a double
+        # quote is present, just make sure both quotes are escaped correctly
+        rdata = repr(data)
+        if rdata[0] == '"':
+            # Double quotes are escaped
+            dquote = r'x22'
+            squote = r'\x27'
+        else:
+            # Single quotes are escaped
+            dquote = r'\x22'
+            squote = r'x27'
         # Replace all double quotes to its corresponding hex value
-        data = re.sub(r'"', r'\x22', repr(data)[1:-1])
+        data = re.sub(r'"', dquote, rdata[1:-1])
         # Replace all single quotes to its corresponding hex value
-        data = re.sub(r"'", r'x27', data)
+        data = re.sub(r"'", squote, data)
         # Escape all backslashes
         data = re.sub(r'\\', r'\\\\', data)
         return data
@@ -773,3 +784,32 @@ class Pktt(BaseObj, Unpack):
         """
         return "IP.dst == '%s' and TCP.dst_port == %d" % (ipaddr, port)
 
+if __name__ == '__main__':
+    # Self test of module
+    l_escape = [
+        "hello",
+        "\x00\\test",
+        "single'quote",
+        'double"quote',
+        'back`quote',
+        'single\'double"quote',
+        'double"single\'quote',
+        'single\'double"back`quote',
+        'double"single\'back`quote',
+    ]
+    ntests = 2*len(l_escape)
+
+    tcount = 0
+    for quote in ["'", '"']:
+        for data in l_escape:
+            expr = "data == %s%s%s" % (quote, Pktt.escape(data), quote)
+            expr = re.sub(r'\\\\', r'\\', expr)
+            if eval(expr):
+                tcount += 1
+
+    if tcount == ntests:
+        print "All tests passed!"
+        exit(0)
+    else:
+        print "%d tests failed" % (ntests-tcount)
+        exit(1)
