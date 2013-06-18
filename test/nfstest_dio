@@ -1467,7 +1467,7 @@ try:
     if x.ispnfs:
         x.stripe_size = loc_body['stripe_size']
 
-    if x.f_bsize < 3*x.rsize:
+    if len(x.basename) == 0 and x.f_bsize < 3*x.rsize:
         raise Exception("CONFIG error: mount options rsize and wsize must be greater than or equal to 3 times the value of option rsize")
     elif x.ispnfs and x.stripe_size < 3*x.rsize:
         raise Exception("CONFIG error: option rsize must be less or equal to %d (stripe size / 3)" % x.stripe_size/3)
