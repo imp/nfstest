@@ -377,10 +377,22 @@ class NFSUtil(Host):
             pktreply = self.pktt.match(open_str, maxindex=maxindex)
             if not pktreply:
                 continue
-            idx = pktreply.NFSidx
 
-            # GETFH should be the operation following the OPEN
-            filehandle   = pktreply.nfs.resarray[idx + 1].object
+            if claimfh is None:
+                # GETFH should be the operation following the OPEN,
+                # but look for it just in case it is not
+                idx = pktreply.NFSidx + 1
+                resarray = pktreply.nfs.resarray
+                while (idx < len(resarray) and resarray[idx].resop != OP_GETFH):
+                    idx += 1
+                if idx >= len(resarray):
+                    # Could not find GETFH
+                    return (None, None, None)
+                filehandle = pktreply.nfs.resarray[idx].object
+            else:
+                # No need to find GETFH, the filehandle is already known
+                filehandle = claimfh
+
             open_stateid = pktreply.NFSop.stateid.other
             if pktreply.NFSop.delegation.delegation_type in [OPEN_DELEGATE_READ, OPEN_DELEGATE_WRITE]:
                 deleg_stateid = pktreply.NFSop.delegation.stateid.other
