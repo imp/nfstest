@@ -158,8 +158,12 @@ class TCP(BaseObj, Unpack):
         # Save data
         save_data = self.data
 
+        # Expected data segment sequence number
+        nseg = self.seq - stream['last_seq']
+
         # Make sure this segment has valid data
-        if len(self.data) <= 20 and self.data == '\x00' * len(self.data):
+        if nseg != len(stream['msfrag']) and \
+           len(self.data) <= 20 and self.data == '\x00' * len(self.data):
             save_data = ""
 
         # Append segment to the stream map
@@ -234,8 +238,12 @@ class TCP(BaseObj, Unpack):
             stream['msfrag'] = ''
             stream['frag_off'] = 0
 
+        # Expected data segment sequence number
+        nseg = self.seq - stream['last_seq']
+
         # Make sure this segment has valid data
-        if size <= 20 and save_data == '\x00' * size:
+        if nseg != len(stream['msfrag']) and \
+           size <= 20 and save_data == '\x00' * size:
             return
 
         if not rpc:
