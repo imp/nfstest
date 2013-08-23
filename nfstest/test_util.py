@@ -897,14 +897,19 @@ class TestUtil(NFSUtil):
     def create_host(self, host, user=''):
         """Create client host object and set defaults."""
         self.clientobj = Host(
-            host    = host,
-            user    = user,
-            server  = self.server,
-            proto   = self.proto,
-            port    = self.port,
-            export  = self.export,
-            mtpoint = self.mtpoint,
-            sudo    = self.sudo,
+            host         = host,
+            user         = user,
+            server       = self.server,
+            nfsversion   = self.nfsversion,
+            minorversion = self.minorversion,
+            proto        = self.proto,
+            port         = self.port,
+            export       = self.export,
+            mtpoint      = self.mtpoint,
+            datadir      = self.datadir,
+            mtopts       = self.mtopts,
+            nomount      = self.nomount,
+            sudo         = self.sudo,
         )
 
         self.clients.append(self.clientobj)
