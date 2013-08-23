@@ -226,7 +226,7 @@ class Host(BaseObj):
            Return the exit status of the last command
         """
         if process is None:
-            plist = self.process_list
+            plist = list(self.process_list)
         else:
             plist = [process]
 
