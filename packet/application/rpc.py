@@ -142,7 +142,7 @@ class RPC(BaseObj, Unpack):
             save_data = ''
             while True:
                 # Decode fragment header
-                psize = self.unpack(4, 'I')[0]
+                psize = self.unpack_uint()
                 self.fragment_hdr = Header(
                     size          = (psize & 0x7FFFFFFF) + len(save_data),
                     last_fragment = psize >> 31,
@@ -164,15 +164,15 @@ class RPC(BaseObj, Unpack):
             return
 
         # Decode XID and RPC type
-        self.xid  = self.unpack(4, 'I')[0]
-        self.type = self.unpack(4, 'I')[0]
+        self.xid  = self.unpack_uint()
+        self.type = self.unpack_uint()
 
         if self.type == 0:
             # RPC call
-            self.rpc_version = self.unpack(4, 'I')[0]
-            self.program     = self.unpack(4, 'I')[0]
-            self.version     = self.unpack(4, 'I')[0]
-            self.procedure   = self.unpack(4, 'I')[0]
+            self.rpc_version = self.unpack_uint()
+            self.program     = self.unpack_uint()
+            self.version     = self.unpack_uint()
+            self.procedure   = self.unpack_uint()
             self.credential  = self._rpc_credential()
             if self.credential is None:
                 return
@@ -181,26 +181,26 @@ class RPC(BaseObj, Unpack):
                 return
         elif self.type == 1:
             # RPC reply
-            self.reply_status = self.unpack(4, 'I')[0]
+            self.reply_status = self.unpack_uint()
             if self.reply_status == 0:
                 self.verifier  = self._rpc_credential()
                 if self.verifier is None:
                     return 
-                self.accepted_status = self.unpack(4, 'I')[0]
+                self.accepted_status = self.unpack_uint()
                 if self.accepted_status == 2:
                     self.prog_mismatch = Prog(
-                        low  = self.unpack(4, 'I')[0],
-                        high = self.unpack(4, 'I')[0],
+                        low  = self.unpack_uint(),
+                        high = self.unpack_uint(),
                     )
             else:
-                self.rejected_status = self.unpack(4, 'I')[0]
+                self.rejected_status = self.unpack_uint()
                 if self.rejected_status == 0:
                     self.prog_mismatch = Prog(
-                        low  = self.unpack(4, 'I')[0],
-                        high = self.unpack(4, 'I')[0],
+                        low  = self.unpack_uint(),
+                        high = self.unpack_uint(),
                     )
                 else:
-                    self.auth_status = self.unpack(4, 'I')[0]
+                    self.auth_status = self.unpack_uint()
         else:
             return
 
@@ -388,11 +388,10 @@ class RPC(BaseObj, Unpack):
         if len(self.data) < 8:
             return
         ret = Credential(
-            flavor = self.unpack(4, 'I')[0],
-            size   = self.unpack(4, 'I')[0],
+            flavor = self.unpack_uint(),
+            size   = self.unpack_uint(),
         )
         if len(self.data) < ret.size:
             return None
         ret.data = self.rawdata(ret.size)
         return ret
-
