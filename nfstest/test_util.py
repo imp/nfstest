@@ -894,22 +894,22 @@ class TestUtil(NFSUtil):
         """Return the number of instances the testid has occurred."""
         return self._msg_count[tid]
 
-    def create_host(self, host, user=''):
+    def create_host(self, host, **kwargs):
         """Create client host object and set defaults."""
         self.clientobj = Host(
             host         = host,
-            user         = user,
-            server       = self.server,
-            nfsversion   = self.nfsversion,
-            minorversion = self.minorversion,
-            proto        = self.proto,
-            port         = self.port,
-            export       = self.export,
-            mtpoint      = self.mtpoint,
-            datadir      = self.datadir,
-            mtopts       = self.mtopts,
-            nomount      = self.nomount,
-            sudo         = self.sudo,
+            user         = kwargs.pop("user", ""),
+            server       = kwargs.pop("server",       self.server),
+            nfsversion   = kwargs.pop("nfsversion",   self.nfsversion),
+            minorversion = kwargs.pop("minorversion", self.minorversion),
+            proto        = kwargs.pop("proto",        self.proto),
+            port         = kwargs.pop("port",         self.port),
+            export       = kwargs.pop("export",       self.export),
+            mtpoint      = kwargs.pop("mtpoint",      self.mtpoint),
+            datadir      = kwargs.pop("datadir",      self.datadir),
+            mtopts       = kwargs.pop("mtopts",       self.mtopts),
+            nomount      = kwargs.pop("nomount",      self.nomount),
+            sudo         = kwargs.pop("sudo",         self.sudo),
         )
 
         self.clients.append(self.clientobj)
