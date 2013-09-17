@@ -25,7 +25,7 @@ from pprint import pprint
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -127,15 +127,21 @@ class RPC(BaseObj, Unpack):
         """
         self.data = data
         self._rpc = False
-        pktt._rpcbytes = 0
+        self._pktt = pktt
+        self._proto = proto
 
-        if proto == 6:
+        try:
+            self._rpc_header()
+        except:
+            pass
+
+    def _rpc_header(self):
+        """Internal method to decode RPC header"""
+        if self._proto == 6:
             # TCP packet
             save_data = ''
             while True:
                 # Decode fragment header
-                if len(self.data) < 12:
-                    return
                 psize = self.unpack(4, 'I')[0]
                 self.fragment_hdr = Header(
                     size          = (psize & 0x7FFFFFFF) + len(save_data),
@@ -151,10 +157,11 @@ class RPC(BaseObj, Unpack):
                     # Concatenate RPC fragments
                     self.data = save_data + self.data
                     break
-        else:
+        elif self._proto == 17:
             # UDP packet
-            if len(self.data) < 8:
-                return
+            pass
+        else:
+            return
 
         # Decode XID and RPC type
         self.xid  = self.unpack(4, 'I')[0]
@@ -162,8 +169,6 @@ class RPC(BaseObj, Unpack):
 
         if self.type == 0:
             # RPC call
-            if len(self.data) < 32:
-                return
             self.rpc_version = self.unpack(4, 'I')[0]
             self.program     = self.unpack(4, 'I')[0]
             self.version     = self.unpack(4, 'I')[0]
@@ -176,19 +181,13 @@ class RPC(BaseObj, Unpack):
                 return
         elif self.type == 1:
             # RPC reply
-            if len(self.data) < 12:
-                return
             self.reply_status = self.unpack(4, 'I')[0]
             if self.reply_status == 0:
                 self.verifier  = self._rpc_credential()
                 if self.verifier is None:
                     return 
-                if len(self.data) < 4:
-                    return
                 self.accepted_status = self.unpack(4, 'I')[0]
                 if self.accepted_status == 2:
-                    if len(self.data) < 8:
-                        return
                     self.prog_mismatch = Prog(
                         low  = self.unpack(4, 'I')[0],
                         high = self.unpack(4, 'I')[0],
@@ -196,8 +195,6 @@ class RPC(BaseObj, Unpack):
             else:
                 self.rejected_status = self.unpack(4, 'I')[0]
                 if self.rejected_status == 0:
-                    if len(self.data) < 8:
-                        return
                     self.prog_mismatch = Prog(
                         low  = self.unpack(4, 'I')[0],
                         high = self.unpack(4, 'I')[0],
@@ -209,7 +206,7 @@ class RPC(BaseObj, Unpack):
 
         self._rpc = True
         xid = self.xid
-        rpctype = self.type
+        pktt = self._pktt
         if not getattr(pktt, '_rpc_xid_map', None):
             # NFS XID map: to keep track of call information
             # (program, version, procedure, ...) and insert
@@ -218,13 +215,13 @@ class RPC(BaseObj, Unpack):
         if xid not in pktt._rpc_xid_map:
             # Initialize new xid
             pktt._rpc_xid_map[xid] = {}
-        if rpctype == 0:
+        if self.type == 0:
             # Save call info in the xid map
             pktt._rpc_xid_map[xid]['program']    = self.program
             pktt._rpc_xid_map[xid]['version']    = self.version
             pktt._rpc_xid_map[xid]['procedure']  = self.procedure
             pktt._rpc_xid_map[xid]['call_index'] = pktt.index
-        elif rpctype == 1:
+        elif self.type == 1:
             try:
                 # Save reply info and retrieve call info
                 self.program    = pktt._rpc_xid_map[xid]['program']
@@ -234,10 +231,6 @@ class RPC(BaseObj, Unpack):
                 pktt._rpc_xid_map[xid]['reply_index'] = pktt.index
             except Exception:
                 pass
-        else:
-            return
-
-        return
 
     def __str__(self):
         """String representation of object
