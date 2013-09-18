@@ -404,5 +404,12 @@ class RPC(BaseObj, Unpack):
         )
         if len(self.data) < ret.size:
             return None
-        ret.data = self.rawdata(ret.size)
+        if ret.flavor == AUTH_SYS:
+            ret.stamp   = self.unpack_uint()
+            ret.machine = self.unpack_string(pad=4)
+            ret.uid     = self.unpack_uint()
+            ret.gid     = self.unpack_uint()
+            ret.gids    = self.unpack_array(self.unpack_uint)
+        else:
+            ret.data = self.rawdata(ret.size)
         return ret
