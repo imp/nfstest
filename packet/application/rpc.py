@@ -16,13 +16,13 @@ RPC module
 
 Decode RPC layer.
 """
+import struct
 import traceback
 from rpc_const import *
 import nfstest_config as c
 from baseobj import BaseObj
 from packet.unpack import Unpack
 from packet.nfs.nfs4lib import FancyNFS4Unpacker
-from pprint import pprint
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
@@ -175,14 +175,14 @@ class RPC(BaseObj, Unpack):
             self.credential  = self._rpc_credential()
             if self.credential is None:
                 return
-            self.verifier = self._rpc_credential()
+            self.verifier = self._rpc_credential(True)
             if self.rpc_version != 2 or (self.credential.flavor in [0,1] and self.verifier is None):
                 return
         elif self.type == REPLY:
             # RPC reply
             self.reply_status = self.unpack_uint()
             if self.reply_status == MSG_ACCEPTED:
-                self.verifier  = self._rpc_credential()
+                self.verifier = self._rpc_credential(True)
                 if self.verifier is None:
                     return
                 self.accepted_status = self.unpack_uint()
@@ -394,22 +394,34 @@ class RPC(BaseObj, Unpack):
             return
         return ret
 
-    def _rpc_credential(self):
+    def _rpc_credential(self, verifier=False):
         """Get the RPC credentials from the working buffer."""
         if len(self.data) < 8:
             return
-        ret = Credential(
-            flavor = self.unpack_uint(),
-            size   = self.unpack_uint(),
-        )
-        if len(self.data) < ret.size:
+        ret = Credential(flavor = self.unpack_uint())
+        # Get size of data without removing bytes from buffer
+        size = struct.unpack('!I', self.data[:4])[0]
+        if len(self.data) < size:
             return None
         if ret.flavor == AUTH_SYS:
+            ret.size    = self.unpack_uint()
             ret.stamp   = self.unpack_uint()
             ret.machine = self.unpack_string(pad=4)
             ret.uid     = self.unpack_uint()
             ret.gid     = self.unpack_uint()
             ret.gids    = self.unpack_array(self.unpack_uint)
+        elif ret.flavor == RPCSEC_GSS:
+            if not verifier:
+                ret.size        = self.unpack_uint()
+                ret.gss_version = self.unpack_uint()
+                ret.gss_proc    = self.unpack_uint()
+                ret.gss_seq_num = self.unpack_uint()
+                ret.gss_service = self.unpack_uint()
+                ret.gss_context = self.unpack_string()
+            else:
+                ret.size      = size
+                ret.gss_token = self.unpack_string(pad=4)
         else:
-            ret.data = self.rawdata(ret.size)
+            ret.size = self.unpack_uint()
+            ret.data = self.rawdata(size)
         return ret
