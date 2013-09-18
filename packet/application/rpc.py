@@ -176,7 +176,7 @@ class RPC(BaseObj, Unpack):
             if self.credential is None:
                 return
             self.verifier = self._rpc_credential()
-            if self.rpc_version == 0 or self.verifier is None:
+            if self.rpc_version != 2 or (self.credential.flavor in [0,1] and self.verifier is None):
                 return
         elif self.type == REPLY:
             # RPC reply
@@ -191,15 +191,27 @@ class RPC(BaseObj, Unpack):
                         low  = self.unpack_uint(),
                         high = self.unpack_uint(),
                     )
-            else:
+                elif accept_stat.get(self.accepted_status) is None:
+                    # Invalid accept_stat
+                    return
+            elif self.reply_status == MSG_DENIED:
                 self.rejected_status = self.unpack_uint()
                 if self.rejected_status == RPC_MISMATCH:
-                    self.prog_mismatch = Prog(
+                    self.rpc_mismatch = Prog(
                         low  = self.unpack_uint(),
                         high = self.unpack_uint(),
                     )
-                else:
+                elif self.rejected_status == AUTH_ERROR:
                     self.auth_status = self.unpack_uint()
+                    if auth_stat.get(self.auth_status) is None:
+                        # Invalid auth_status
+                        return
+                elif reject_stat.get(self.rejected_status) is None:
+                    # Invalid rejected status
+                    return
+            elif reply_stat.get(self.reply_status) is None:
+                # Invalid reply status
+                return
         else:
             return
 
