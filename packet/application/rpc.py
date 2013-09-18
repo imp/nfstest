@@ -231,6 +231,10 @@ class RPC(BaseObj, Unpack):
             except Exception:
                 pass
 
+    def __nonzero__(self):
+        """Truth value testing for the built-in operation bool()"""
+        return self._rpc
+
     def __str__(self):
         """String representation of object
 
@@ -377,10 +381,6 @@ class RPC(BaseObj, Unpack):
             self.dprint('PKT3', traceback.format_exc())
             return
         return ret
-
-    def __nonzero__(self):
-        """Truth value testing for the built-in operation bool()"""
-        return self._rpc
 
     def _rpc_credential(self):
         """Get the RPC credentials from the working buffer."""
