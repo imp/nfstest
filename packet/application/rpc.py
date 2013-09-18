@@ -17,6 +17,7 @@ RPC module
 Decode RPC layer.
 """
 import traceback
+from rpc_const import *
 import nfstest_config as c
 from baseobj import BaseObj
 from packet.unpack import Unpack
@@ -28,8 +29,6 @@ __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
 __version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
-
-_RPC_map = {0:'CALL', 1:'REPLY'}
 
 class Header(BaseObj): pass
 class Credential(BaseObj): pass
@@ -167,7 +166,7 @@ class RPC(BaseObj, Unpack):
         self.xid  = self.unpack_uint()
         self.type = self.unpack_uint()
 
-        if self.type == 0:
+        if self.type == CALL:
             # RPC call
             self.rpc_version = self.unpack_uint()
             self.program     = self.unpack_uint()
@@ -179,22 +178,22 @@ class RPC(BaseObj, Unpack):
             self.verifier = self._rpc_credential()
             if self.rpc_version == 0 or self.verifier is None:
                 return
-        elif self.type == 1:
+        elif self.type == REPLY:
             # RPC reply
             self.reply_status = self.unpack_uint()
-            if self.reply_status == 0:
+            if self.reply_status == MSG_ACCEPTED:
                 self.verifier  = self._rpc_credential()
                 if self.verifier is None:
-                    return 
+                    return
                 self.accepted_status = self.unpack_uint()
-                if self.accepted_status == 2:
+                if self.accepted_status == PROG_MISMATCH:
                     self.prog_mismatch = Prog(
                         low  = self.unpack_uint(),
                         high = self.unpack_uint(),
                     )
             else:
                 self.rejected_status = self.unpack_uint()
-                if self.rejected_status == 0:
+                if self.rejected_status == RPC_MISMATCH:
                     self.prog_mismatch = Prog(
                         low  = self.unpack_uint(),
                         high = self.unpack_uint(),
@@ -215,13 +214,13 @@ class RPC(BaseObj, Unpack):
         if xid not in pktt._rpc_xid_map:
             # Initialize new xid
             pktt._rpc_xid_map[xid] = {}
-        if self.type == 0:
+        if self.type == CALL:
             # Save call info in the xid map
             pktt._rpc_xid_map[xid]['program']    = self.program
             pktt._rpc_xid_map[xid]['version']    = self.version
             pktt._rpc_xid_map[xid]['procedure']  = self.procedure
             pktt._rpc_xid_map[xid]['call_index'] = pktt.index
-        elif self.type == 1:
+        elif self.type == REPLY:
             try:
                 # Save reply info and retrieve call info
                 self.program    = pktt._rpc_xid_map[xid]['program']
@@ -251,10 +250,10 @@ class RPC(BaseObj, Unpack):
                 if value != None:
                     prog += " %s: %d," % (item, value)
         if rdebug == 1:
-            rtype = 'reply' if self.type else 'call '
+            rtype = "%-5s" % msg_type.get(self.type, 'Unknown').lower()
             out = "RPC %s %s xid: %s" % (rtype, prog, hex(self.xid))
         elif rdebug == 2:
-            rtype = "%s(%d)" % (_RPC_map.get(self.type, 'Unknown'), self.type)
+            rtype = "%-5s(%d)" % (msg_type.get(self.type, 'Unknown'), self.type)
             out = "%s,%s xid: %s" % (rtype, prog, hex(self.xid))
         else:
             out = BaseObj.__str__(self)
@@ -352,7 +351,7 @@ class RPC(BaseObj, Unpack):
                 # Create object to unpack the NFS layer
                 unpacker = FancyNFS4Unpacker(self.data)
                 unpacker.check_enum = False
-                if self.type == 0:
+                if self.type == CALL:
                     # RPC call
                     if cb_flag:
                         # This packet is definitely not program 100003
