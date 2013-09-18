@@ -14,7 +14,7 @@
 import os
 
 NFSTEST_PACKAGE          = 'NFStest'
-NFSTEST_VERSION          = '1.0.2'
+NFSTEST_VERSION          = '1.0.3'
 NFSTEST_SUMMARY          = 'NFS Test Suite'
 NFSTEST_AUTHOR           = 'Jorge Mora'
 NFSTEST_AUTHOR_EMAIL     = 'mora@netapp.com'
@@ -119,6 +119,7 @@ NFSTEST_ALLMODS = [
     'packet/record.py',
     'packet/unpack.py',
     'packet/application/rpc.py',
+    'packet/application/rpc_const.py',
     'packet/internet/ipv4.py',
     'packet/internet/ipv6.py',
     'packet/internet/ipv6addr.py',
