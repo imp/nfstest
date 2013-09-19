@@ -18,15 +18,15 @@ Decode RPC layer.
 """
 import struct
 import traceback
+from gss import GSS
 from rpc_const import *
 import nfstest_config as c
 from baseobj import BaseObj
-from packet.unpack import Unpack
 from packet.nfs.nfs4lib import FancyNFS4Unpacker
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -34,7 +34,7 @@ class Header(BaseObj): pass
 class Credential(BaseObj): pass
 class Prog(BaseObj): pass
 
-class RPC(BaseObj, Unpack):
+class RPC(GSS):
     """RPC object
 
        Usage:
@@ -232,6 +232,11 @@ class RPC(BaseObj, Unpack):
             pktt._rpc_xid_map[xid]['version']    = self.version
             pktt._rpc_xid_map[xid]['procedure']  = self.procedure
             pktt._rpc_xid_map[xid]['call_index'] = pktt.index
+            pktt._rpc_xid_map[xid]['flavor']     = self.credential.flavor
+            if self.credential.flavor == RPCSEC_GSS:
+                pktt._rpc_xid_map[xid]['gss_proc'] = self.credential.gss_proc
+                pktt._rpc_xid_map[xid]['gss_service'] = self.credential.gss_service
+                pktt._rpc_xid_map[xid]['gss_version'] = self.credential.gss_version
         elif self.type == REPLY:
             try:
                 # Save reply info and retrieve call info
@@ -239,6 +244,10 @@ class RPC(BaseObj, Unpack):
                 self.version    = pktt._rpc_xid_map[xid]['version']
                 self.procedure  = pktt._rpc_xid_map[xid]['procedure']
                 self.call_index = pktt._rpc_xid_map[xid]['call_index']
+                if pktt._rpc_xid_map[xid]['flavor'] == RPCSEC_GSS:
+                    self.verifier.gss_proc = pktt._rpc_xid_map[xid]['gss_proc']
+                    self.verifier.gss_service = pktt._rpc_xid_map[xid]['gss_service']
+                    self.verifier.gss_version = pktt._rpc_xid_map[xid]['gss_version']
                 pktt._rpc_xid_map[xid]['reply_index'] = pktt.index
             except Exception:
                 pass
@@ -336,6 +345,7 @@ class RPC(BaseObj, Unpack):
            SEQUENCE4res, GETATTR4res, etc.
         """
         ret = None
+        self.decode_gss_data()
 
         try:
             # Set variables for ease of use
@@ -388,6 +398,7 @@ class RPC(BaseObj, Unpack):
 
                 # Position data pointer to include bytes processed by NFS
                 self.data = self.data[unpacker.get_position():]
+                self.decode_gss_checksum()
         except Exception:
             # Could not decode NFS packet
             self.dprint('PKT3', traceback.format_exc())
