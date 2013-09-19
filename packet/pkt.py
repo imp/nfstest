@@ -18,8 +18,8 @@ Provides the object for a packet and the string representation of the packet.
 This object has an attribute for each of the layers in the packet so each layer
 can be accessed directly instead of going through each layer. To access the nfs
 layer object you can use 'x.nfs' instead of using 'x.ethernet.ip.tcp.rpc.nfs'
-which would very cumbersome to use. Also, since NFS can be used with either
-TCP or UDP it would be harder to to access the nfs object independently or
+which would be very cumbersome to use. Also, since NFS can be used with either
+TCP or UDP it would be harder to access the nfs object independently of
 the protocol.
 
 Packet object attributes:
@@ -44,9 +44,11 @@ __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 # The order in which to display all layers in the packet
-_PKT_layers = ['record', 'ethernet', 'ip', 'tcp', 'udp', 'rpc', 'nfs']
+_PKT_layers = ['record', 'ethernet', 'ip', 'tcp', 'udp', 'rpc', 'gssd', 'nfs', 'gssc']
 # Required layers for debug_repr(1)
 _PKT_rlayers = ['record', 'ip']
+# Do not display these layers for debug_repr(1)
+_PKT_nlayers = ['gssd', 'gssc']
 # Packet layers to display as debug_repr(2) for debug_repr(1) if last layer
 _PKT_mlayers = ['record', 'ethernet', 'ip']
 _maxlen = len(max(_PKT_layers, key=len))
@@ -86,7 +88,7 @@ class Pkt(BaseObj):
             out = "Pkt(\n" if rdebug == 2 else ''
             klist = []
             for key in _PKT_layers:
-                if hasattr(self, key):
+                if hasattr(self, key) and (rdebug > 1 or key not in _PKT_nlayers):
                     klist.append(key)
             lastkey = klist[-1]
             for key in klist:
