@@ -140,6 +140,11 @@ class TCP(BaseObj, Unpack):
         # De-reference stream map
         stream = pktt._tcp_stream_map[streamid]
 
+        if self.flags.SYN:
+            # Reset seq_base on SYN
+            stream['seq_base'] = self.seq_number
+            stream['last_seq'] = 0
+
         # Convert sequence numbers to relative numbers
         seq = self.seq_number - stream['seq_base']
         self.seq = seq
@@ -308,4 +313,3 @@ class TCP(BaseObj, Unpack):
                                     pkt.ip.dst,
                                     pkt.tcp.dst_port)
         return streamid
-
