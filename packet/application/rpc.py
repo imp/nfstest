@@ -276,10 +276,10 @@ class RPC(GSS):
                     prog += " %s: %d," % (item, value)
         if rdebug == 1:
             rtype = "%-5s" % msg_type.get(self.type, 'Unknown').lower()
-            out = "RPC %s %s xid: %s" % (rtype, prog, hex(self.xid))
+            out = "RPC %s %s xid: 0x%08x" % (rtype, prog, self.xid)
         elif rdebug == 2:
             rtype = "%-5s(%d)" % (msg_type.get(self.type, 'Unknown'), self.type)
-            out = "%s,%s xid: %s" % (rtype, prog, hex(self.xid))
+            out = "%s,%s xid: 0x%08x" % (rtype, prog, self.xid)
         else:
             out = BaseObj.__str__(self)
         return out
