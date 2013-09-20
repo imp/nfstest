@@ -883,6 +883,7 @@ class NFSUtil(Host):
             self.need_lcommit = False
             self.stateid      = None
             self.max_iosize   = 0
+            self.error_hash   = {}
 
         # Get I/O type: iomode == 1 (READ), else (WRITE)
         io_op = OP_READ if iomode == LAYOUTIOMODE4_READ else OP_WRITE
@@ -960,16 +961,24 @@ class NFSUtil(Host):
                     else:
                         good_pattern += 1
                 else:
-                    if nfsop.committed < FILE_SYNC4:
-                        # Need layout commit if reply is not FILE_SYNC4
-                        self.need_lcommit = True
-                    if nfsop.committed == UNSTABLE4:
-                        # Need commit if reply is UNSTABLE4
-                        self.need_commit = True
-                    if self.writeverf is None:
-                        self.writeverf = nfsop.writeverf
-                    if self.writeverf != nfsop.writeverf:
-                        self.test_verf = False
+                    if pkt.nfs.status == NFS4_OK:
+                        if nfsop.committed < FILE_SYNC4:
+                            # Need layout commit if reply is not FILE_SYNC4
+                            self.need_lcommit = True
+                        if nfsop.committed == UNSTABLE4:
+                            # Need commit if reply is UNSTABLE4
+                            self.need_commit = True
+                        if self.writeverf is None:
+                            self.writeverf = nfsop.writeverf
+                        if self.writeverf != nfsop.writeverf:
+                            self.test_verf = False
+                    else:
+                        # Server returned error for this I/O operation
+                        errstr = nfsstat4.get(pkt.nfs.status)
+                        if self.error_hash.get(errstr) is None:
+                            self.error_hash[errstr] = 1
+                        else:
+                            self.error_hash[errstr] += 1
 
                 if len(xids) == 0:
                     break
@@ -1142,4 +1151,3 @@ class NFSUtil(Host):
         if cnt == count:
             return " & ".join(plist)
         return
-

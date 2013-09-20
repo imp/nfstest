@@ -180,6 +180,7 @@ class pNFSTest(TestUtil):
         self.test_stripe      = True
         self.test_verf        = True
         self.max_iosize       = 0
+        self.error_hash       = {}
         self.test_commit_full = True
         self.test_commit_verf = True
         self.test_no_commit   = False
@@ -204,7 +205,7 @@ class pNFSTest(TestUtil):
         self.dprint('DBG2', "First stripe index %d" % self.layout['first_stripe_index'])
         self.dprint('DBG2', "Using %s layouts" % layout_dense)
         self.dprint('DBG2', "Commit thru MDS is %s" % self.layout['commit_mds'])
-        self.dprint('DBG2', "Device ID: %r" % self.layout['deviceid'])
+        self.dprint('DBG2', "Device ID: 0x%s" % self.layout['deviceid'].encode('hex'))
         if filesize < (nds-1) * self.layout['stripe_size'] + 1:
             N = (filesize / (self.layout['stripe_size'] + 1)) + 1
             if len(nocreate_list) == 0:
@@ -287,6 +288,9 @@ class pNFSTest(TestUtil):
             else:
                 self.test(False, "%s should have been sent to at least one DS" % io_str)
             return
+
+        for err in self.error_hash:
+            self.test(False, "%s fails with %s, number of failures found: %d" % (io_str, err, self.error_hash[err]))
 
         # Get stateid messages
         (stateid, stid_str, stid_failmsg) = self.verify_stateid(openfh, self.stateid)
@@ -1259,4 +1263,3 @@ except Exception:
     x.test(False, traceback.format_exc())
 finally:
     x.exit()
-
