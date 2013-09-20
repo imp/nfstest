@@ -703,21 +703,41 @@ class DioTest(TestUtil):
 
             idx = 0
             xids = {}
+            io_h = {}
+            err_h = {}
             while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(stateid))):
-                roffset = self.pktt.pkt.NFSop.offset
-                ipaddr  = self.pktt.pkt.ip.dst
-                port    = self.pktt.pkt.tcp.dst_port
-                xid     = self.pktt.pkt.rpc.xid
+                save_index = self.pktt.index
+                pkt     = self.pktt.pkt
+                roffset = pkt.NFSop.offset
+                ipaddr  = pkt.ip.dst
+                port    = pkt.tcp.dst_port
+                xid     = pkt.rpc.xid
+                pktr    = self.pktt.match("RPC.xid == %d" % xid)
+                self.pktt.rewind(save_index)
                 if xids.get(xid, None) is None:
                     # Save xid to keep track of re-transmitted packets
                     xids[xid] = 1
                 else:
                     # Skip re-transmitted packets
                     continue
+                if pktr == "nfs" and pktr.nfs.status != NFS4_OK:
+                    # Server returned error for this I/O operation
+                    errstr = nfsstat4.get(pktr.nfs.status)
+                    if err_h.get(errstr) is None:
+                        err_h[errstr] = 1
+                    else:
+                        err_h[errstr] += 1
                 if write:
-                    rsize = len(self.pktt.pkt.NFSop.data)
+                    rsize = len(pkt.NFSop.data)
                 else:
-                    rsize = self.pktt.pkt.NFSop.count
+                    rsize = pkt.NFSop.count
+
+                if io_h.get(roffset) == rsize:
+                    # This (offset, size) has already been processed
+                    continue
+                else:
+                    io_h[roffset] = rsize
+
                 if len(test_hash) <= idx:
                     # Got unexpected READ/WRITE
                     self.test(0, "%s (%d@%d) should not be sent" % (io_str, rsize, roffset))
@@ -743,6 +763,9 @@ class DioTest(TestUtil):
                             rserver = MDS if self.ispnfs else SERVER
                             self.test(ipaddr == self.server_ipaddr and port == self.port, "%s should be sent to the %s" % (io_str, mds_map[rserver]))
                 idx += 1
+            for err in err_h:
+                self.test(False, "%s fails with %s, number of failures found: %d" % (io_str, err, err_h[err]))
+
             for item in test_hash[idx:]:
                 # Check for expected READ/WRITE packets which were not found
                 toffset = item.get('offset') 
@@ -1505,4 +1528,3 @@ except Exception:
     x.test(False, traceback.format_exc())
 finally:
     x.exit()
-
