@@ -544,7 +544,8 @@ class TestUtil(NFSUtil):
                 try:
                     for line in open(self.bugmsgs, 'r'):
                         line = line.strip()
-                        self._bugmsgs.append(line)
+                        if len(line):
+                            self._bugmsgs.append(line)
                 except Exception as e:
                     self.config("Unable to load bug messages from file '%s': %r" % (self.bugmsgs, e))
 
