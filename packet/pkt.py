@@ -60,7 +60,21 @@ class Pkt(BaseObj):
            from packet.pkt import Pkt
 
            x = Pkt()
+
+           # Check if this is an NFS packet
+           if x == 'nfs':
+               print x.nfs
     """
+    def __eq__(self, other):
+        """Comparison method used to determine if object has a given layer"""
+        if type(other) is str:
+            return getattr(self, other.lower(), None) is not None
+        return False
+
+    def __ne__(self, other):
+        """Comparison method used to determine if object does not have a given layer"""
+        return not self.__eq__(other)
+
     def __str__(self):
         """String representation of object
 
