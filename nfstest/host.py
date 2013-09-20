@@ -86,6 +86,8 @@ class Host(BaseObj):
                NFS protocol name [default: 'tcp']
            port:
                NFS server port [default: 2049]
+           sec:
+               Security flavor [default: 'sys']
            export:
                Exported file system to mount [default: '/']
            mtpoint:
@@ -111,6 +113,7 @@ class Host(BaseObj):
         self.minorversion = kwargs.pop("minorversion", c.NFSTEST_MINORVERSION)
         self.proto        = kwargs.pop("proto",        c.NFSTEST_NFSPROTO)
         self.port         = kwargs.pop("port",         c.NFSTEST_NFSPORT)
+        self.sec          = kwargs.pop("sec",          c.NFSTEST_NFSSEC)
         self.export       = kwargs.pop("export",       c.NFSTEST_EXPORT)
         self.mtpoint      = kwargs.pop("mtpoint",      c.NFSTEST_MTPOINT)
         self.datadir      = kwargs.pop("datadir",      '')
@@ -297,6 +300,8 @@ class Host(BaseObj):
                NFS protocol name [default: self.proto]
            port:
                NFS server port [default: self.port]
+           sec:
+               Security flavor [default: self.sec]
            export:
                Exported file system to mount [default: self.export]
            mtpoint:
@@ -314,6 +319,7 @@ class Host(BaseObj):
         minorversion = kwargs.pop("minorversion", self.minorversion)
         proto        = kwargs.pop("proto",        self.proto)
         port         = kwargs.pop("port",         self.port)
+        sec          = kwargs.pop("sec",          self.sec)
         export       = kwargs.pop("export",       self.export)
         mtpoint      = kwargs.pop("mtpoint",      self.mtpoint)
         datadir      = kwargs.pop("datadir",      self.datadir)
@@ -346,7 +352,7 @@ class Host(BaseObj):
             minorversion_str = "minorversion=%d," % minorversion
 
         # Mount command
-        cmd = "mount -o vers=%d,%s%sproto=%s,port=%d %s:%s %s" % (nfsversion, minorversion_str, mtopts, proto, port, server, export, mtpoint)
+        cmd = "mount -o vers=%d,%s%sproto=%s,sec=%s,port=%d %s:%s %s" % (nfsversion, minorversion_str, mtopts, proto, sec, port, server, export, mtpoint)
         self.run_cmd(cmd, sudo=True, dlevel='DBG2', msg="Mount volume: ")
 
         self.mounted = True

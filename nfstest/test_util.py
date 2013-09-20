@@ -278,6 +278,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("-s", "--server", default=self.server, help="Server name or IP address")
         self.opts.add_option("-p", "--port", type="int", default=self.port, help="NFS server port [default: %default]")
         self.opts.add_option("--proto", default=self.proto, help="NFS protocol name [default: '%default']")
+        self.opts.add_option("--sec", default=self.sec, help="Security flavor [default: '%default']")
         self.opts.add_option("--nfsversion", type="int", default=self.nfsversion, help="NFS version [default: %default]")
         self.opts.add_option("--minorversion", type="int", default=self.minorversion, help="Minor version [default: %default]")
         self.opts.add_option("-e", "--export", default=self.export, help="Exported file system to mount [default: '%default']")
@@ -904,6 +905,7 @@ class TestUtil(NFSUtil):
             minorversion = kwargs.pop("minorversion", self.minorversion),
             proto        = kwargs.pop("proto",        self.proto),
             port         = kwargs.pop("port",         self.port),
+            sec          = kwargs.pop("sec",          self.sec),
             export       = kwargs.pop("export",       self.export),
             mtpoint      = kwargs.pop("mtpoint",      self.mtpoint),
             datadir      = kwargs.pop("datadir",      self.datadir),
