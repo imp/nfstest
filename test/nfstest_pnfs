@@ -285,6 +285,8 @@ class pNFSTest(TestUtil):
         if nio_total == 0:
             if iomode == LAYOUTIOMODE4_READ and stid_str == 'DELEG' and openfh['deleg_type'] == OPEN_DELEGATE_WRITE:
                 self.test(True, "%s should not be sent to DS when holding a write delegation" % io_str)
+            elif openfh.get('dtcached'):
+                self.test(True, "%s should not be sent to DS if data has been cached" % io_str)
             else:
                 self.test(False, "%s should have been sent to at least one DS" % io_str)
             return
@@ -478,7 +480,11 @@ class pNFSTest(TestUtil):
         if nolayoutget:
             self.test(not self.layout, "LAYOUTGET should not be sent")
         elif 'layout' in openfh:
-            if openfh['layout']['return_on_close']:
+            if 'samefile' in openfh and not self.layout:
+                self.test(True, "LAYOUTGET should not be sent for the same file if data has been cached")
+                nolayoutget = True
+                self.layout = openfh['layout']
+            elif openfh['layout']['return_on_close']:
                 self.test(self.layout, "LAYOUTGET should be sent for the same file")
             else:
                 self.test(not self.layout, "LAYOUTGET should not be sent for the same file")
@@ -569,7 +575,7 @@ class pNFSTest(TestUtil):
         # Save current packet index
         save_index = self.pktt.index
 
-        if not nolayoutget:
+        if not nolayoutget or 'samefile' in openfh:
             self.verify_pnfs_functionality(openfh, iomode, filesize, multipath_ds_list, need_getdev, nocreate, nocreate_list, write_list, max_iosize, nmax_iosize)
             # Rewind trace file to saved packet index
             self.pktt.rewind(save_index)
@@ -855,6 +861,7 @@ class pNFSTest(TestUtil):
 
                 self.test_group("Verify traffic for first file opened again using pNFS within the same mount - %s" % swstr)
                 openfh['samefile'] = True
+                openfh['dtcached'] = True
                 self.verify_file(filename, iomode=siomode, nocreate=True, multipath_ds_list=multipath_ds_list, openfh=openfh, delegreturn=delegreturn)
 
             self.session_ids = session_ids
