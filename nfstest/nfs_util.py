@@ -682,6 +682,7 @@ class NFSUtil(Host):
                     self.ca_maxrespsz = pktreply.NFSop.csr_fore_chan_attrs.ca_maxresponsesize
 
                     slotid = 0
+                    fmsg = None
                     test_seq = True
                     save_index = self.pktt.index
                     while True:
@@ -689,12 +690,14 @@ class NFSUtil(Host):
                         (pktcall, pktreply) = self.find_nfs_op(OP_SEQUENCE, ipaddr, port, call_only=True, match="NFS.sa_slotid == %d" % slotid)
                         if pktcall is None:
                             break
+                        self.pktt.rewind(save_index)
                         slotid += 1
                         if pktcall.NFSop.sa_sequenceid != 1:
+                            fmsg = ", slot id %d starts with sequence id %d" % (slotid-1, pktcall.NFSop.sa_sequenceid)
                             test_seq = False
                             break
                     if slotid > 0:
-                        self.test(test_seq, "SEQUENCE request should start with a sequence id of 1")
+                        self.test(test_seq, "SEQUENCE request should start with a sequence id of 1", failmsg=fmsg)
                     else:
                         self.test(False, "SEQUENCE request was not found")
                     self.pktt.rewind(save_index)
