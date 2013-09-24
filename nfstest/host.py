@@ -24,6 +24,7 @@ original state.
 import os
 import re
 import time
+import ctypes
 import socket
 import subprocess
 import nfstest_config as c
@@ -133,6 +134,10 @@ class Host(BaseObj):
         self.fqdn = socket.getfqdn()
         ipv6 = self.proto[-1] == '6'
         self.ipaddr = self.get_ip_address(host=self.host, ipv6=ipv6)
+
+        # Load share library - used for functions not implemented
+        # in the python modules "os" or "posix"
+        self.libc = ctypes.CDLL('libc.so.6')
 
     def sudo_cmd(self, cmd):
         """Prefix the SUDO command if effective user is not root."""
@@ -373,6 +378,9 @@ class Host(BaseObj):
         self._check_mtpoint(self.mtpoint)
         if self._invalidmtpoint:
             return
+
+        self.dprint('DBG3', "Sync all buffers to disk")
+        self.libc.sync()
 
         # Try to umount 5 times
         cmd = "umount -f %s" % self.mtpoint
