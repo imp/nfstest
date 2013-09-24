@@ -178,6 +178,7 @@ class pNFSTest(TestUtil):
         self.test_seqid       = True
         self.test_stateid     = True
         self.test_pattern     = True
+        self.test_niomiss     = 0
         self.test_stripe      = True
         self.test_verf        = True
         self.max_iosize       = 0
@@ -302,7 +303,8 @@ class pNFSTest(TestUtil):
         self.test(do_write and no_write, "%s should only be sent to the DS with I/O" % io_str)
         self.test(self.test_seqid,   "%s stateid seqid should be 0" % io_str)
         self.test(self.test_stateid, "%s stateid should be the %s stateid" % (io_str, stid_str), failmsg=stid_failmsg)
-        self.test(test_pattern,      "%s data should be correct for the given DS and offset" % io_str)
+        if nio_total - self.test_niomiss > 0:
+            self.test(test_pattern,  "%s data should be correct for the given DS and offset" % io_str)
         self.test(self.test_stripe,  "%s offset and server/fh should be correct for %s layouts" % (io_str, layout_dense))
         if max_iosize != None:
             rsize = "rsize" if iomode == LAYOUTIOMODE4_READ else "wsize"

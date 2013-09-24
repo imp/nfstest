@@ -880,6 +880,7 @@ class NFSUtil(Host):
             self.test_seqid   = True
             self.test_stateid = True
             self.test_pattern = True
+            self.test_niomiss = 0
             self.test_stripe  = True
             self.test_verf    = True
             self.need_commit  = False
@@ -988,7 +989,12 @@ class NFSUtil(Host):
 
                 if len(xids) == 0:
                     break
-        nops = good_pattern + bad_pattern
+            else:
+                # Call was not found for this reply
+                self.test_niomiss += 1
+        # Add the number of calls with no replies
+        self.test_niomiss += len(xids)
+        nops = good_pattern + bad_pattern + self.test_niomiss
 
         if iomode == LAYOUTIOMODE4_READ:
             self.dprint('DBG7', "READ bad/good pattern %d/%d" % (bad_pattern, good_pattern))
