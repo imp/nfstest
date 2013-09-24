@@ -884,6 +884,7 @@ class NFSUtil(Host):
             self.test_verf    = True
             self.need_commit  = False
             self.need_lcommit = False
+            self.mdsd_lcommit = False
             self.stateid      = None
             self.max_iosize   = 0
             self.error_hash   = {}
@@ -965,6 +966,8 @@ class NFSUtil(Host):
                         good_pattern += 1
                 else:
                     if pkt.nfs.status == NFS4_OK:
+                        if not self.dsismds:
+                            self.mdsd_lcommit = True
                         if nfsop.committed < FILE_SYNC4:
                             # Need layout commit if reply is not FILE_SYNC4
                             self.need_lcommit = True
@@ -1074,7 +1077,10 @@ class NFSUtil(Host):
             self.test(not pkt, "LAYOUTCOMMIT should not be sent to MDS when NFL4_UFLG_COMMIT_THRU_MDS is set")
         else:
             if self.need_lcommit:
-                self.test(pkt, "LAYOUTCOMMIT should be sent to MDS when NFL4_UFLG_COMMIT_THRU_MDS is not set")
+                if self.mdsd_lcommit:
+                    self.test(pkt, "LAYOUTCOMMIT should be sent to MDS when NFL4_UFLG_COMMIT_THRU_MDS is not set")
+                else:
+                    self.test(not pkt, "LAYOUTCOMMIT should not be sent to MDS when DS == MDS")
             else:
                 self.test(not pkt, "LAYOUTCOMMIT should not be sent to MDS (FILE_SYNC4)")
             if not pkt:

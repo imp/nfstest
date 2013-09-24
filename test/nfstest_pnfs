@@ -174,6 +174,7 @@ class pNFSTest(TestUtil):
         self.writeverf        = None
         self.need_commit      = False
         self.need_lcommit     = False
+        self.mdsd_lcommit     = False
         self.test_seqid       = True
         self.test_stateid     = True
         self.test_pattern     = True
@@ -236,6 +237,7 @@ class pNFSTest(TestUtil):
                 ipaddr = '.'.join(addr_list[:4])
                 port = (int(addr_list[4])<<8) + int(addr_list[5])
                 self.dprint('DBG2', "DataServer(%d) ipaddr: %s, port: %d" % (ds_index, ipaddr, port))
+                self.dsismds = ipaddr == self.server_ipaddr
 
                 # Rewind trace file to saved packet index
                 self.pktt.rewind(save_index)
