@@ -516,6 +516,9 @@ class TestUtil(NFSUtil):
                 self.dprint('OPTS', line)
             self.dprint('OPTS', "")
 
+            # Display system information
+            self.dprint('INFO', "SYSTEM: %s" % " ".join(os.uname()))
+
             # Process all command line arguments -- all will be part of the
             # objects namespace
             self.__dict__.update(opts.__dict__)
