@@ -468,7 +468,6 @@ class DioTest(TestUtil):
             self.trace_open()
             (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=filename)
             stateid = deleg_stateid if deleg_stateid else open_stateid
-            idx = 0
             pkt = self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (OP_READ, self.pktt.escape(stateid)))
             self.test(pkt, "READ should be sent to the server")
             if pkt:
@@ -712,7 +711,7 @@ class DioTest(TestUtil):
                 ipaddr  = pkt.ip.dst
                 port    = pkt.tcp.dst_port
                 xid     = pkt.rpc.xid
-                pktr    = self.pktt.match("RPC.xid == %d" % xid)
+                pktr    = self.pktt.match("RPC.type and RPC.xid == %d" % xid)
                 self.pktt.rewind(save_index)
                 if xids.get(xid, None) is None:
                     # Save xid to keep track of re-transmitted packets
@@ -743,7 +742,7 @@ class DioTest(TestUtil):
                     self.test(0, "%s (%d@%d) should not be sent" % (io_str, rsize, roffset))
                 else:
                     # Check READ/WRITE for expected offset and size
-                    toffset  = test_hash[idx].get('offset') 
+                    toffset  = test_hash[idx].get('offset')
                     tsize    = test_hash[idx].get('size')
                     taligned = test_hash[idx].get('aligned')
                     self.test(toffset == roffset and tsize == rsize, "%s (%d@%d) should be sent with correct offset and count" % (io_str, tsize, toffset), failmsg=", got packet (%d@%d)" %(rsize, roffset))
@@ -768,8 +767,8 @@ class DioTest(TestUtil):
 
             for item in test_hash[idx:]:
                 # Check for expected READ/WRITE packets which were not found
-                toffset = item.get('offset') 
-                tsize   = item.get('size') 
+                toffset = item.get('offset')
+                tsize   = item.get('size')
                 self.test(0, "%s (%d@%d) should be sent" % (io_str, tsize, toffset))
 
             if buffered_write != None:
@@ -916,13 +915,14 @@ class DioTest(TestUtil):
         try:
             # Generate test hash
             fd = None
+            off = offset
             head_vec = []
             test_hash = []
             total_size = 0
             for item in tinfo:
                 server = item.get('server')
                 if server != None:
-                    test_hash.append({'server':server, 'size':item['size']})
+                    test_hash.append({'server':server, 'size':item['size'], 'offset':off})
                 else:
                     test_hash[-1]['size'] += item['size']
                 align_str = "" if item['aligned'] else "non-"
@@ -931,6 +931,7 @@ class DioTest(TestUtil):
                 else:
                     head_vec.append("(%d)" % item['size'])
                 total_size += item['size']
+                off += item['size']
             if not self.ispnfs:
                 for item in test_hash:
                     item['server'] = 2
@@ -1014,9 +1015,9 @@ class DioTest(TestUtil):
                 if self.server_ipaddr == ds['ipaddr'] and self.port == ds['port']:
                     dsismds = True
                     break
-            idx = 0
             xids = {}
             received = []
+            pkt_hash = {}
             while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(stateid))):
                 ipaddr = self.pktt.pkt.ip.dst
                 port   = self.pktt.pkt.tcp.dst_port
@@ -1035,22 +1036,31 @@ class DioTest(TestUtil):
                     rserver = MDS if (ipaddr == self.server_ipaddr and port == self.port) else DS
                 else:
                     rserver = SERVER
-                if len(test_hash) <= idx:
-                    self.test(0, "%s should not be sent to the %s with size %d" % (io_str, mds_map[rserver], rsize))
+                off = self.pktt.pkt.NFSop.offset
+                pkt_hash[off] = {'server':rserver, 'size':rsize}
+                received.append("%s(%d)" % (mds_map[rserver], rsize))
+
+            self.dprint('INFO', "Client sent [%s]" % ", ".join(received))
+
+            for item in test_hash:
+                server = item.get('server')
+                size   = item.get('size')
+                pktinfo = pkt_hash.pop(item['offset'], None)
+                if pktinfo is None:
+                    self.test(False, "%s should be sent to the %s with size %d" % (io_str, mds_map[server], size))
                 else:
-                    server = test_hash[idx].get('server') 
-                    size = test_hash[idx].get('size') 
+                    rserver = pktinfo.get('server')
+                    rsize   = pktinfo.get('size')
                     srvtest = dsismds or server == rserver
                     srvrmsg = " not the %s" % mds_map[rserver] if not srvtest else ""
                     sizemsg = " not %d" % rsize if size != rsize else ""
-                    self.test(srvtest and size == rsize, "%s should be sent to the %s%s with size %d%s" % (io_str, mds_map[server], srvrmsg, size, sizemsg))
-                received.append("%s(%d)" % (mds_map[rserver], rsize))
-                idx += 1
-            for item in test_hash[idx:]:
-                server = item.get('server') 
-                size   = item.get('size') 
-                self.test(0, "%s should be sent to the %s with size %d" % (io_str, mds_map[server], size))
-            self.dprint('INFO', "Client sent [%s]" % ", ".join(received))
+                    self.test(srvtest and size == rsize, "%s should be sent to the %s%s with offset %d and size %d%s" % \
+                              (io_str, mds_map[server], srvrmsg, item['offset'], size, sizemsg))
+            for off in pkt_hash:
+                rserver = pkt_hash[off].get('server')
+                rsize   = pkt_hash[off].get('size')
+                self.test(False, "%s should not be sent to the %s with offset %d and size %d" % \
+                          (io_str, mds_map[rserver], off, rsize))
 
             # Check data on all vectors
             idx = 0
