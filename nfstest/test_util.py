@@ -307,6 +307,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("--rpcdebug", default=self.rpcdebug, help="Set RPC kernel debug flags and save log messages [default: '%default']")
         self.opts.add_option("--sudo", default=self.sudo, help="Full path of binary for sudo [default: '%default']")
         self.opts.add_option("--tcpdump", default=self.tcpdump, help="Full path of binary for tcpdump [default: '%default']")
+        self.opts.add_option("--tbsize", type="int", default=self.tbsize, help="Capture buffer size for tcpdump [default: '%default']")
         self.opts.add_option("--iptables", default=self.iptables, help="Full path of binary for iptables [default: '%default']")
         self.opts.add_option("--messages", default=self.messages, help="Full path of log messages file [default: '%default']")
         self.opts.add_option("--tmpdir", default=self.tmpdir, help="Temporary directory [default: '%default']")

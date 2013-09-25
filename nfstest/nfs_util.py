@@ -83,6 +83,8 @@ class NFSUtil(Host):
                Location of file for system messages [default: '/var/log/messages']
            tmpdir:
                Temporary directory where trace files are created [default: '/tmp']
+           tbsize:
+               Capture buffer size in kB [default: 50000]
         """
         # Arguments
         self.rpcdebug  = kwargs.pop("rpcdebug",  '')
@@ -93,6 +95,7 @@ class NFSUtil(Host):
         self.tcpdump   = kwargs.pop("tcpdump",   c.NFSTEST_TCPDUMP)
         self.messages  = kwargs.pop("messages",  c.NFSTEST_MESSAGESLOG)
         self.tmpdir    = kwargs.pop("tmpdir",    c.NFSTEST_TMPDIR)
+        self.tbsize    = kwargs.pop("tbsize",    50000)
         self._nfsdebug = False
         Host.__init__(self)
 
@@ -151,7 +154,7 @@ class NFSUtil(Host):
             for cobj in clients:
                 hosts += " or %s" % cobj.ipaddr
 
-            cmd = "%s%s -s 0 -w %s host %s" % (self.tcpdump, opts, self.tracefile, hosts)
+            cmd = "%s%s -n -B %d -s 0 -w %s host %s" % (self.tcpdump, opts, self.tbsize, self.tracefile, hosts)
             self.run_cmd(cmd, sudo=True, dlevel='DBG2', msg="Trace start: ", wait=False)
             self.traceproc = self.process
 
