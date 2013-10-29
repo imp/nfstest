@@ -1040,7 +1040,8 @@ class DioTest(TestUtil):
                 pkt_hash[off] = {'server':rserver, 'size':rsize}
                 received.append("%s(%d)" % (mds_map[rserver], rsize))
 
-            self.dprint('INFO', "Client sent [%s]" % ", ".join(received))
+            dsmsg = " where DS == MDS" if dsismds else ""
+            self.dprint('INFO', "Client sent [%s]%s" % (", ".join(received), dsmsg))
 
             for item in test_hash:
                 server = item.get('server')
