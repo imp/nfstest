@@ -50,7 +50,6 @@ import fcntl
 import struct
 import inspect
 import textwrap
-import traceback
 from host import Host
 import nfstest_config as c
 from baseobj import BaseObj
@@ -59,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -427,6 +426,7 @@ class TestUtil(NFSUtil):
             argv = []
             for (optfile, lines) in self.optfiles:
                 bcount = 0
+                islist = False
                 idblock = None
                 testblock = None
                 for optline in open(optfile, 'r'):
@@ -445,7 +445,7 @@ class TestUtil(NFSUtil):
                     # Add current option to argument list as if the option was
                     # given on the command line to be able to use parse_args()
                     # again to process all options given in the options files
-                    if name == "}":
+                    if name in ["}", "]"]:
                         # End of block, make sure to close an opened testblock
                         # first before closing an opened idblock
                         bcount -= 1
@@ -455,9 +455,10 @@ class TestUtil(NFSUtil):
                             idblock = None
                     elif len(value) > 0:
                         value = value.strip()
-                        if value == "{":
+                        if value in ["{", "["]:
                             # Start of block, make sure to open an idblock
                             # first before opening a testblock
+                            islist = True if value == "[" else False
                             bcount += 1
                             if idblock is None:
                                 idblock = name
@@ -469,16 +470,28 @@ class TestUtil(NFSUtil):
                                     # Initialize testblock only if it has not
                                     # been initialized, this allows for multiple
                                     # definitions of the same testblock
-                                    self.testopts[name] = {}
+                                    if islist:
+                                        self.testopts[name] = []
+                                    else:
+                                        self.testopts[name] = {}
                         elif testblock is not None:
                             # Inside a testblock, add name/value to testblock
                             # dictionary
-                            self.testopts[testblock][name] = value
+                            if islist:
+                                self.testopts[testblock].append(line)
+                            else:
+                                self.testopts[testblock][name] = value
                         elif idblock is None or idblock == self.id:
                             # Include all general options and options given
                             # by the block specified by the correct script ID
                             argv.append("--%s=%s" % (name, value))
-                    elif idblock is None or idblock == self.id:
+                    elif testblock is not None:
+                        # Inside a testblock, add name to testblock dictionary
+                        if islist:
+                            self.testopts[testblock].append(name)
+                        else:
+                            self.testopts[testblock][name] = True
+                    elif idblock is None or (idblock == self.id and testblock is None):
                         # Include all general options and options given
                         # by the block specified by the correct script ID
                         argv.append("--%s" % name)
