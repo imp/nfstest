@@ -32,7 +32,7 @@ from packet.nfs.nfs4_const import *
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -109,6 +109,27 @@ class NFSUtil(Host):
         self.traceproc = None
         self.nii_name = ''    # nii_name for the client
         self.nii_server = ''  # nii_name for the server
+        self.device_info = {}
+        self.dslist = []
+        self.stateid = None
+        self.dsismds = False
+
+        # Initialize all test variables
+        self.writeverf    = None
+        self.test_seqid   = True
+        self.test_stateid = True
+        self.test_pattern = True
+        self.test_niomiss = 0
+        self.test_stripe  = True
+        self.test_verf    = True
+        self.need_commit  = False
+        self.need_lcommit = False
+        self.mdsd_lcommit = False
+        self.max_iosize   = 0
+        self.error_hash   = {}
+        self.test_commit_full = True
+        self.test_no_commit   = False
+        self.test_commit_verf = True
 
     def trace_start(self, tracefile=None, interface=None, capsize=None, clients=None):
         """Start trace on interface given

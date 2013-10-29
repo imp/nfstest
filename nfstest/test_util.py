@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.4'
+__version__   = '1.0.5'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -166,10 +166,7 @@ class TestUtil(NFSUtil):
         self.bugmsgs = None
         self.nocleanup = True
         self.test_time = [time.time()]
-        self._network = False
-        self.msgoffset = None
         self._fileopt = True
-        self._layoutrecall_mline = ""
         self.remove_list = []
         self.fileidx = 1
         self.diridx = 1
@@ -177,29 +174,15 @@ class TestUtil(NFSUtil):
         self.files = []
         self.dirs = []
         self.abshash = {}
-        self.deviceids = {}
         self.test_msgs = []
         self._msg_count = {}
         self._reset_files()
-        # Initialize all test variables
-        self.writeverf = None
-        self.test_seqid   = True
-        self.test_stateid = True
-        self.test_pattern = True
-        self.test_stripe  = True
-        self.test_verf    = True
-        self.max_iosize   = 0
-        self.need_commit  = False
-        self.need_lcommit = False
-        self.test_commit_full = True
-        self.test_no_commit   = False
-        self.test_commit_verf = True
+
         self.clients = []
         for tid in _test_map:
             self._msg_count[tid] = 0
         self.dindent(4)
-        self.device_info = {}
-        self.dslist = []
+
         self.optfiles = []
         self.testopts = {}
         NFSUtil.__init__(self)
@@ -219,7 +202,7 @@ class TestUtil(NFSUtil):
         self.cleanup()
         if self.mounted:
             self.umount()
-        if self._network:
+        if self.need_network_reset:
             self.network_reset()
 
         if len(self.test_msgs) > 0:

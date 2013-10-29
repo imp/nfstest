@@ -32,7 +32,7 @@ from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -130,6 +130,7 @@ class Host(BaseObj):
         self.process_dmap = {}
         self._checkmtpoint = True
         self._invalidmtpoint = False
+        self.need_network_reset = False
         self._localhost = False if len(self.host) > 0 else True
         self.fqdn = socket.getfqdn()
         ipv6 = self.proto[-1] == '6'
