@@ -173,6 +173,7 @@ class TestUtil(NFSUtil):
         self.remove_list = []
         self.fileidx = 1
         self.diridx = 1
+        self.logidx = 1
         self.files = []
         self.dirs = []
         self.abshash = {}
@@ -613,6 +614,12 @@ class TestUtil(NFSUtil):
                 # by the ones found from a regular expression
                 opts = dict(self.testopts[key].items() + opts.items())
         return opts
+
+    def get_logname(self):
+        """Get next log file name."""
+        logfile = "%s/%s_%d.log" % (self.tmpdir, self.get_name(), self.logidx)
+        self.logidx += 1
+        return logfile
 
     def setup(self, nfiles=None):
         """Set up test environment.
