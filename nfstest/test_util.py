@@ -155,6 +155,7 @@ class TestUtil(NFSUtil):
         self.usage     = kwargs.pop('usage', '')
         self.testnames = kwargs.pop('testnames', [])
         self.progname = os.path.basename(sys.argv[0])
+        self.testname = ""
         if self.progname[-3:] == '.py':
             # Remove extension
             self.progname = self.progname[:-3]
@@ -582,10 +583,13 @@ class TestUtil(NFSUtil):
            calling this method.
         """
         if name is None:
-            # Get correct test name by inspecting the stack to find which
-            # method is calling this method
-            out = inspect.stack()
-            name = out[1][3].replace("_test", "")
+            # Get current testname
+            name = self.testname
+            if len(name) == 0:
+                # Get correct test name by inspecting the stack to find which
+                # method is calling this method
+                out = inspect.stack()
+                name = out[1][3].replace("_test", "")
 
         # Get options given for this specific test name
         opts = self.testopts.get(name, {})
@@ -682,11 +686,13 @@ class TestUtil(NFSUtil):
         """
         testnames = kwargs.pop("testnames", self.testlist)
         for name in self.testlist:
-            testname = name + '_test'
-            if name in testnames and hasattr(self, testname):
+            testmethod = name + '_test'
+            if name in testnames and hasattr(self, testmethod):
+                # Set current testname on object
+                self.testname = name
                 # Execute test
                 self.dprint('INFO', "Running test: %s" % name)
-                getattr(self, testname)(**kwargs)
+                getattr(self, testmethod)(**kwargs)
 
     def _print_msg(self, msg, tid=None):
         """Display message to the screen and to the log file."""
