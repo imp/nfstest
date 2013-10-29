@@ -334,11 +334,11 @@ class TestUtil(NFSUtil):
         self._opts = {}
 
     @staticmethod
-    def str_list(value, type=str):
+    def str_list(value, type=str, sep=","):
         """Return a list of <type> elements from the comma separated string."""
         slist = []
         try:
-            for item in value.replace(' ', '').split(','):
+            for item in value.replace(' ', '').split(sep):
                 if len(item) > 0:
                     if type == int:
                         val = int(item)
@@ -347,6 +347,8 @@ class TestUtil(NFSUtil):
                     else:
                         val = item
                     slist.append(val)
+                else:
+                    slist.append(None)
         except:
             return
         return slist
