@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.5'
+__version__   = '1.0.6'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -178,7 +178,6 @@ class TestUtil(NFSUtil):
         self._msg_count = {}
         self._reset_files()
 
-        self.clients = []
         for tid in _test_map:
             self._msg_count[tid] = 0
         self.dindent(4)
@@ -910,28 +909,6 @@ class TestUtil(NFSUtil):
     def testid_count(self, tid):
         """Return the number of instances the testid has occurred."""
         return self._msg_count[tid]
-
-    def create_host(self, host, **kwargs):
-        """Create client host object and set defaults."""
-        self.clientobj = Host(
-            host         = host,
-            user         = kwargs.pop("user", ""),
-            server       = kwargs.pop("server",       self.server),
-            nfsversion   = kwargs.pop("nfsversion",   self.nfsversion),
-            minorversion = kwargs.pop("minorversion", self.minorversion),
-            proto        = kwargs.pop("proto",        self.proto),
-            port         = kwargs.pop("port",         self.port),
-            sec          = kwargs.pop("sec",          self.sec),
-            export       = kwargs.pop("export",       self.export),
-            mtpoint      = kwargs.pop("mtpoint",      self.mtpoint),
-            datadir      = kwargs.pop("datadir",      self.datadir),
-            mtopts       = kwargs.pop("mtopts",       self.mtopts),
-            nomount      = kwargs.pop("nomount",      self.nomount),
-            sudo         = kwargs.pop("sudo",         self.sudo),
-        )
-
-        self.clients.append(self.clientobj)
-        return self.clientobj
 
     def abspath(self, filename, dir=None):
         """Return the absolute path for the given file name."""

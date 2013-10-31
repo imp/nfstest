@@ -32,7 +32,7 @@ from packet.nfs.nfs4_const import *
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -106,6 +106,7 @@ class NFSUtil(Host):
         self.tracefile = ''
         self.tracefiles = []
         self.clients = []
+        self.clientobj = None
         self.traceproc = None
         self.nii_name = ''    # nii_name for the client
         self.nii_server = ''  # nii_name for the server
@@ -130,6 +131,28 @@ class NFSUtil(Host):
         self.test_commit_full = True
         self.test_no_commit   = False
         self.test_commit_verf = True
+
+    def create_host(self, host, **kwargs):
+        """Create client host object and set defaults."""
+        self.clientobj = Host(
+            host         = host,
+            user         = kwargs.pop("user", ""),
+            server       = kwargs.pop("server",       self.server),
+            nfsversion   = kwargs.pop("nfsversion",   self.nfsversion),
+            minorversion = kwargs.pop("minorversion", self.minorversion),
+            proto        = kwargs.pop("proto",        self.proto),
+            port         = kwargs.pop("port",         self.port),
+            sec          = kwargs.pop("sec",          self.sec),
+            export       = kwargs.pop("export",       self.export),
+            mtpoint      = kwargs.pop("mtpoint",      self.mtpoint),
+            datadir      = kwargs.pop("datadir",      self.datadir),
+            mtopts       = kwargs.pop("mtopts",       self.mtopts),
+            nomount      = kwargs.pop("nomount",      self.nomount),
+            sudo         = kwargs.pop("sudo",         self.sudo),
+        )
+
+        self.clients.append(self.clientobj)
+        return self.clientobj
 
     def trace_start(self, tracefile=None, interface=None, capsize=None, clients=None):
         """Start trace on interface given
