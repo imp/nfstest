@@ -32,7 +32,7 @@ from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -124,12 +124,14 @@ class Host(BaseObj):
         self.iptables     = kwargs.pop("iptables",     c.NFSTEST_IPTABLES)
         self.sudo         = kwargs.pop("sudo",         c.NFSTEST_SUDO)
         # Initialize object variables
+        self.mtdir = self.mtpoint
         self.mounted = False
         self.process_list = []
         self.process_smap = {}
         self.process_dmap = {}
-        self._checkmtpoint = True
-        self._invalidmtpoint = False
+        self._checkmtpoint = []
+        self._invalidmtpoint = []
+        self._mtpoint_created = []
         self.need_network_reset = False
         self._localhost = False if len(self.host) > 0 else True
         self.fqdn = socket.getfqdn(self.host)
@@ -139,6 +141,22 @@ class Host(BaseObj):
         # Load share library - used for functions not implemented
         # in the python modules "os" or "posix"
         self.libc = ctypes.CDLL('libc.so.6')
+
+    def __del__(self):
+        """Destructor
+
+           Gracefully unmount volume and reset network.
+        """
+        if self.need_network_reset:
+            self.network_reset()
+        if self.mounted:
+            self.umount()
+        for mtpoint in self._mtpoint_created:
+            try:
+                cmd = "rmdir %s" % mtpoint
+                self.run_cmd(cmd, sudo=True, dlevel='DBG3', msg="Removing mount point directory: ")
+            except:
+                pass
 
     def sudo_cmd(self, cmd):
         """Prefix the SUDO command if effective user is not root."""
@@ -283,15 +301,38 @@ class Host(BaseObj):
 
     def _check_mtpoint(self, mtpoint):
         """Check if mount point exists."""
-        if not self._checkmtpoint:
+        if mtpoint in self._checkmtpoint:
+            # Run this method once per mount point
             return
-        self._checkmtpoint = False
-        if not os.path.exists(mtpoint):
-            self._invalidmtpoint = True
-            self.config("Mount point %s does not exist" % mtpoint)
-        if not os.path.isdir(mtpoint):
-            self._invalidmtpoint = True
-            self.config("Mount point %s is not a directory" % mtpoint)
+        isdir = True
+        self._checkmtpoint.append(mtpoint)
+        if self._localhost:
+            # Locally check if mount point exists and is a directory
+            exist = os.path.exists(mtpoint)
+            if exist:
+                isdir = os.path.isdir(mtpoint)
+        else:
+            # Remotely check if mount point exists and is a directory
+            try:
+                cmd = "test -e '%s'" % mtpoint
+                self.run_cmd(cmd, dlevel='DBG4', msg="Check if mount point directory exists: ")
+            except:
+                pass
+            exist = not self.returncode
+            if exist:
+                try:
+                    cmd = "test -d '%s'" % mtpoint
+                    self.run_cmd(cmd, dlevel='DBG4', msg="Check if mount point is a directory: ")
+                except:
+                    pass
+                isdir = not self.returncode
+        if not exist:
+            cmd = "mkdir -p %s" % mtpoint
+            self.run_cmd(cmd, sudo=True, dlevel='DBG3', msg="Creating mount point directory: ")
+            self._mtpoint_created.append(mtpoint)
+        elif not isdir:
+            self._invalidmtpoint.append(mtpoint)
+            raise Exception("Mount point %s is not a directory" % mtpoint)
 
     def mount(self, **kwargs):
         """Mount the file system on the given mount point.
@@ -333,16 +374,14 @@ class Host(BaseObj):
 
         # Remove trailing '/' on mount point
         mtpoint = mtpoint.rstrip("/")
-        self._check_mtpoint(mtpoint)
-        if self._invalidmtpoint:
-            return
 
         if len(datadir):
-            self.mtdir = os.path.join(self.mtpoint, datadir)
+            self.mtdir = os.path.join(mtpoint, datadir)
         else:
-            self.mtdir = self.mtpoint
+            self.mtdir = mtpoint
 
-        if self.nomount:
+        self._check_mtpoint(mtpoint)
+        if self.nomount or mtpoint in self._invalidmtpoint:
             return
 
         if len(export) > 1:
@@ -365,8 +404,18 @@ class Host(BaseObj):
         self.mtpoint = mtpoint
 
         # Create data directory if it does not exist
-        if not os.path.exists(self.mtdir):
-            os.mkdir(self.mtdir, 0777)
+        if self._localhost:
+            if not os.path.exists(self.mtdir):
+                os.mkdir(self.mtdir, 0777)
+        else:
+            try:
+                cmd = "test -e '%s'" % self.mtdir
+                self.run_cmd(cmd, dlevel='DBG4', msg="Check if data directory exists: ")
+            except:
+                pass
+            if self.returncode:
+                cmd = "mkdir -m 0777 -p %s" % self.mtdir
+                self.run_cmd(cmd, dlevel='DBG3', msg="Creating data directory: ")
 
         # Return the mount point
         return mtpoint
@@ -377,7 +426,7 @@ class Host(BaseObj):
             return
 
         self._check_mtpoint(self.mtpoint)
-        if self._invalidmtpoint:
+        if self.mtpoint in self._invalidmtpoint:
             return
 
         self.dprint('DBG3', "Sync all buffers to disk")
