@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.6'
+__version__   = '1.0.7'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -199,10 +199,8 @@ class TestUtil(NFSUtil):
         self._tverbose()
         self.trace_stop()
         self.cleanup()
-        if self.mounted:
-            self.umount()
-        if self.need_network_reset:
-            self.network_reset()
+        # Call base destructor
+        NFSUtil.__del__(self)
 
         if len(self.test_msgs) > 0:
             if getattr(self, 'logfile', None):
