@@ -132,7 +132,7 @@ class Host(BaseObj):
         self._invalidmtpoint = False
         self.need_network_reset = False
         self._localhost = False if len(self.host) > 0 else True
-        self.fqdn = socket.getfqdn()
+        self.fqdn = socket.getfqdn(self.host)
         ipv6 = self.proto[-1] == '6'
         self.ipaddr = self.get_ip_address(host=self.host, ipv6=ipv6)
 
