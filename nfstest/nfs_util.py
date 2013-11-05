@@ -32,7 +32,7 @@ from packet.nfs.nfs4_const import *
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -131,6 +131,19 @@ class NFSUtil(Host):
         self.test_commit_full = True
         self.test_no_commit   = False
         self.test_commit_verf = True
+
+    def __del__(self):
+        """Destructor
+
+           Gracefully stop the packet trace and unreference all client
+           objects
+        """
+        self.trace_stop()
+        self.clientobj = None
+        while self.clients:
+            self.clients.pop()
+        # Call base destructor
+        Host.__del__(self)
 
     def create_host(self, host, **kwargs):
         """Create client host object and set defaults."""
