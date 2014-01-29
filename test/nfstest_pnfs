@@ -23,7 +23,7 @@ from nfstest.test_util import TestUtil
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -826,6 +826,7 @@ class pNFSTest(TestUtil):
                 filename2 = self.files[1]
                 self.read_file(filename2)
 
+            time.sleep(2)
             trace2 = self.trace_start()
             if swrite:
                 self.dprint('DBG3', "Open first file again on same session [%s] writing %d@%d" % (filename, self.filesize, 0))
@@ -839,6 +840,7 @@ class pNFSTest(TestUtil):
                 self.read_file(filename, msg="Open first file again on same session [%s] for reading" % filename)
 
             self.umount()
+            time.sleep(1)
             self.trace_stop()
 
             # Verify network traffic
