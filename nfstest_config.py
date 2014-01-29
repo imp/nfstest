@@ -14,7 +14,7 @@
 import os
 
 NFSTEST_PACKAGE          = 'NFStest'
-NFSTEST_VERSION          = '1.0.7'
+NFSTEST_VERSION          = '1.0.8'
 NFSTEST_SUMMARY          = 'NFS Test Suite'
 NFSTEST_AUTHOR           = 'Jorge Mora'
 NFSTEST_AUTHOR_EMAIL     = 'mora@netapp.com'
