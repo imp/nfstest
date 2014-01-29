@@ -13,6 +13,7 @@
 # FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 #===============================================================================
 import os
+import time
 import posix
 import ctypes
 import traceback
@@ -22,7 +23,7 @@ from nfstest.test_util import TestUtil
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -996,6 +997,7 @@ class DioTest(TestUtil):
             if fd:
                 self.dprint('DBG3', "Close file %s " % absfile)
                 posix.close(fd)
+            time.sleep(1)
             self.trace_stop()
 
         try:
