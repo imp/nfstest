@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.7'
+__version__   = '1.0.8'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -282,6 +282,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("--rsize", type="int", default=4096, help="Read size to use when reading files [default: %default]")
         self.opts.add_option("--wsize", type="int", default=4096, help="Write size to use when writing files [default: %default]")
         self.opts.add_option("--iodelay", type="float", default=0.1, help="Seconds to delay I/O operations [default: %default]")
+        self.opts.add_option("--trcdelay", type="float", default=0.0, help="Seconds to delay before stopping packet trace [default: %default]")
         self.opts.add_option("--offset-delta", type="int", default=4096, help="Read/Write offset delta [default: %default]")
         self.opts.add_option("--warnings", action="store_true", default=False, help="Display warnings")
         self.opts.add_option("--nfsdebug", default=self.nfsdebug, help="Set NFS kernel debug flags and save log messages [default: '%default']")

@@ -24,6 +24,7 @@ trace is also included.
 """
 import os
 import re
+import time
 import subprocess
 from host import Host
 import nfstest_config as c
@@ -32,7 +33,7 @@ from packet.nfs.nfs4_const import *
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.4'
+__version__   = '1.0.5'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -75,6 +76,8 @@ class NFSUtil(Host):
                Base name for log messages files to create [default: 'dbgfile']
            tracename:
                Base name for trace files to create [default: 'tracefile']
+           trcdelay:
+               Seconds to delay before stopping packet trace [default: 0.0]
            notrace:
                Debug option so a trace is not actually started [default: False]
            tcpdump:
@@ -91,6 +94,7 @@ class NFSUtil(Host):
         self.nfsdebug  = kwargs.pop("nfsdebug",  '')
         self.dbgname   = kwargs.pop("dbgname",   'dbgfile')
         self.tracename = kwargs.pop("tracename", 'tracefile')
+        self.trcdelay  = kwargs.pop("trcdelay",  0.0)
         self.notrace   = kwargs.pop("notrace",   False)
         self.tcpdump   = kwargs.pop("tcpdump",   c.NFSTEST_TCPDUMP)
         self.messages  = kwargs.pop("messages",  c.NFSTEST_MESSAGESLOG)
@@ -226,6 +230,7 @@ class NFSUtil(Host):
         try:
             if self.traceproc:
                 self.dprint('DBG2', "Trace stop")
+                time.sleep(self.trcdelay)
                 self.stop_cmd(self.traceproc)
                 self.traceproc = None
             if not self.notrace and self._nfsdebug:
