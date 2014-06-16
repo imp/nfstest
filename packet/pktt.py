@@ -27,7 +27,7 @@ the whole file into memory.
 
 Packet layers supported:
     - ETHERNET II (RFC 894)
-    - IP layer (only supports v4)
+    - IP layer (supports IPv4 and IPv6)
     - TCP layer
     - RPC layer
     - NFS v4.0
@@ -301,6 +301,11 @@ class Pktt(BaseObj, Unpack):
     def _getfh(self):
         """Get the filehandle of the trace file, open file if necessary."""
         if self.fh == None:
+            # Check size of file
+            fstat = os.stat(self.tfile)
+            if fstat.st_size == 0:
+                raise Exception("Packet trace file is empty")
+
             # Open trace file
             self.fh = open(self.tfile, 'rb')
 
