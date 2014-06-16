@@ -35,6 +35,7 @@ Packet layers supported:
 """
 import os
 import re
+import gzip
 import time
 import token
 import struct
@@ -49,7 +50,7 @@ from packet.link.ethernet import ETHERNET
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -309,23 +310,33 @@ class Pktt(BaseObj, Unpack):
             # Open trace file
             self.fh = open(self.tfile, 'rb')
 
-            # Initialize offset
-            self.offset = 0
+            iszip = False
+            self.header_fmt = None
+            while self.header_fmt is None:
+                # Initialize offset
+                self.offset = 0
 
-            # Get file identifier
-            self.ident = self._read(4)
-            if self.ident == '\324\303\262\241':
-                # Little endian
-                self.bigendian = 0
-                self.header_fmt = '<HHIIII'
-                self.header_rec = '<IIII'
-            elif self.ident == '\241\262\303\324':
-                # Big endian
-                self.bigendian = 1
-                self.header_fmt = '>HHIIII'
-                self.header_rec = '>IIII'
-            else:
-                raise Exception('Not a tcpdump file')
+                # Get file identifier
+                try:
+                    self.ident = self._read(4)
+                except:
+                    self.ident = ""
+
+                if self.ident == '\324\303\262\241':
+                    # Little endian
+                    self.header_fmt = '<HHIIII'
+                    self.header_rec = '<IIII'
+                elif self.ident == '\241\262\303\324':
+                    # Big endian
+                    self.header_fmt = '>HHIIII'
+                    self.header_rec = '>IIII'
+                else:
+                    if iszip:
+                        raise Exception('Not a tcpdump file')
+                    iszip = True
+                    self.fh.seek(0)
+                    # Try if this is a gzip compress file
+                    self.fh = gzip.GzipFile(fileobj=self.fh)
 
             # Get header information
             head_keys = ('major', 'minor', 'zone_offset', 'accuracy', 'dump_length', 'link_type')
