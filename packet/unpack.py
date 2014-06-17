@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -44,6 +44,9 @@ class Unpack(object):
            short_int = x.unpack_short()
            uint      = x.unpack_uint()
            uint64    = x.unpack_uint64()
+           data1     = x.unpack_opaque()
+           data2     = x.unpack_opaque(64)  # Length of opaque must be <= 64
+           data3     = x.unpack_fopaque(32)
 
            # Get string where length is given as an unsigned integer
            buffer = x.unpack_string()
@@ -85,9 +88,19 @@ class Unpack(object):
         """
         self.data = data
 
-    def rawdata(self, size):
-        """Get the number of bytes given from the working buffer."""
+    def rawdata(self, size, pad=0):
+        """Get the number of bytes given from the working buffer.
+
+           size:
+               Length of data to get
+           pad:
+               Get and discard padding bytes [default: 0]
+               If given, data is padded to this byte boundary
+        """
         buf = self.data[0:size]
+        if pad > 0:
+            # Discard padding bytes
+            size += (size+pad-1)/pad*pad - size
         self.data = self.data[size:]
         return buf
 
@@ -113,6 +126,17 @@ class Unpack(object):
     def unpack_uint64(self):
         """Get an unsigned 64 bit integer"""
         return self.unpack(8, 'Q')[0]
+
+    def unpack_opaque(self, maxcount=0):
+        """Get a variable length opaque upto a maximum length of maxcount"""
+        size = self.unpack_uint()
+        if maxcount > 0 and size > maxcount:
+            raise Exception, "Opaque exceeds maximum length"
+        return self.rawdata(size, pad=4)
+
+    def unpack_fopaque(self, size):
+        """Get a fixed length opaque"""
+        return self.rawdata(size, pad=4)
 
     def unpack_string(self, *kwts, **kwds):
         """Get a variable length string
