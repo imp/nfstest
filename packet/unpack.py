@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.4'
+__version__   = '1.0.5'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -50,6 +50,8 @@ class Unpack(object):
 
            # Get string where length is given as an unsigned integer
            buffer = x.unpack_string()
+           # Get string of fixed length
+           buffer = x.unpack_string(32)
            # Get string where length is given as a short integer
            buffer = x.unpack_string(Unpack.unpack_short)
            buffer = x.unpack_string(ltype=Unpack.unpack_short)
@@ -58,6 +60,8 @@ class Unpack(object):
 
            # Get an array of integers
            alist = x.unpack_array()
+           # Get a fixed length array of integers
+           alist = x.unpack_array(ltype=10)
            # Get an array of short integers
            alist = x.unpack_array(Unpack.unpack_short)
            # Get an array of strings, the length of the array is given
@@ -90,6 +94,15 @@ class Unpack(object):
                Raw packet data
         """
         self.data = data
+
+    def _get_ltype(self, ltype):
+        """Get length of element"""
+        if isinstance(ltype, int):
+            # An integer is given, just return it
+            return ltype
+        else:
+            # A function is given, return output of function
+            return ltype(self)
 
     def rawdata(self, size, pad=0):
         """Get the number of bytes given from the working buffer.
@@ -151,6 +164,7 @@ class Unpack(object):
 
            ltype:
                Function to decode length of string [default: unpack_uint]
+               Could also be given as an integer to have a fixed length string
                Given as the first positional argument or as a named argument
            pad:
                Get and discard padding bytes [default: 0]
@@ -164,7 +178,7 @@ class Unpack(object):
         ltype = kwds.pop('ltype', ltype)
         pad   = kwds.pop('pad', 0)
 
-        slen = ltype(self)
+        slen = self._get_ltype(ltype)
         return self.rawdata(slen, pad)
 
     def unpack_array(self, *kwts, **kwds):
@@ -177,6 +191,7 @@ class Unpack(object):
                Given as the first positional argument or as a named argument
            ltype:
                Function to decode length of array [default: unpack_uint]
+               Could also be given as an integer to have a fixed length array
                Given as the second positional argument or as a named argument
            args:
                Named arguments to pass to unpack_item function [default: {}]
@@ -196,12 +211,12 @@ class Unpack(object):
 
         ret = []
         # Get length of array
-        slen = ltype(self)
+        slen = self._get_ltype(ltype)
         while slen > 0:
             # Unpack each item in the array
             ret.append(unpack_item(self, **uargs))
             if islist:
-                slen = ltype(self)
+                slen = self._get_ltype(ltype)
             else:
                 slen -= 1
         return ret
