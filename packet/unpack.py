@@ -169,16 +169,21 @@ class Unpack(object):
            pad:
                Get and discard padding bytes [default: 0]
                If given, string is padded to this byte boundary
+           maxcount:
+               Maximum length of string [default: any length]
         """
         # Process positional arguments
         ltype = Unpack.unpack_uint
         if len(kwts):
             ltype = kwts[0]
         # Process named arguments
-        ltype = kwds.pop('ltype', ltype)
-        pad   = kwds.pop('pad', 0)
+        ltype    = kwds.pop('ltype', ltype)
+        pad      = kwds.pop('pad', 0)
+        maxcount = kwds.pop('maxcount', 0)
 
         slen = self._get_ltype(ltype)
+        if maxcount > 0 and slen > maxcount:
+            raise Exception, "String exceeds maximum length"
         return self.rawdata(slen, pad)
 
     def unpack_array(self, *kwts, **kwds):
@@ -195,6 +200,8 @@ class Unpack(object):
                Given as the second positional argument or as a named argument
            args:
                Named arguments to pass to unpack_item function [default: {}]
+           maxcount:
+               Maximum length of array [default: any length]
         """
         # Process positional arguments
         unpack_item = Unpack.unpack_uint
@@ -208,10 +215,13 @@ class Unpack(object):
         ltype       = kwds.pop('ltype', ltype)
         uargs       = kwds.pop('args', {})
         islist      = kwds.pop('islist', False)
+        maxcount    = kwds.pop('maxcount', 0)
 
         ret = []
         # Get length of array
         slen = self._get_ltype(ltype)
+        if maxcount > 0 and slen > maxcount:
+            raise Exception, "Array exceeds maximum length"
         while slen > 0:
             # Unpack each item in the array
             ret.append(unpack_item(self, **uargs))
