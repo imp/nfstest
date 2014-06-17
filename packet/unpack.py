@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -51,32 +51,35 @@ class Unpack(object):
            # Get string where length is given as an unsigned integer
            buffer = x.unpack_string()
            # Get string where length is given as a short integer
-           buffer = x.unpack_string(x.unpack_short)
-           buffer = x.unpack_string(ltype=x.unpack_short)
+           buffer = x.unpack_string(Unpack.unpack_short)
+           buffer = x.unpack_string(ltype=Unpack.unpack_short)
            # Get string padded to a 4 byte boundary, discard padding bytes
            buffer = x.unpack_string(pad=4)
 
            # Get an array of integers
            alist = x.unpack_array()
            # Get an array of short integers
-           alist = x.unpack_array(x.unpack_short)
+           alist = x.unpack_array(Unpack.unpack_short)
            # Get an array of strings, the length of the array is given
            # by a short integer
-           alist = x.unpack_array(x.unpack_string, x.unpack_short)
+           alist = x.unpack_array(Unpack.unpack_string, Unpack.unpack_short)
            # Get an array of strings, the length of each string is given by
            # a short integer and each string is padded to a 4 byte boundary
-           alist = x.unpack_array(x.unpack_string, args={'ltype':x.unpack_short, 'pad':4})
+           alist = x.unpack_array(Unpack.unpack_string, args={'ltype':Unpack.unpack_short, 'pad':4})
+           # Get an array of objects decoded by item_obj where the first
+           # argument to item_obj is the unpack object, e.g., item = item_obj(x)
+           alist = x.unpack_array(item_obj)
 
            # Get a list of integers
            alist = x.unpack_list()
            # Get a list of short integers
-           alist = x.unpack_list(x.unpack_short)
+           alist = x.unpack_list(Unpack.unpack_short)
            # Get a list of strings, the next item flag is given
            # by a short integer
-           alist = x.unpack_list(x.unpack_string, x.unpack_short)
+           alist = x.unpack_list(Unpack.unpack_string, Unpack.unpack_short)
            # Get a list of strings, the length of each string is given by
            # a short integer and each string is padded to a 4 byte boundary
-           alist = x.unpack_list(x.unpack_string, args={'ltype':x.unpack_short, 'pad':4})
+           alist = x.unpack_list(Unpack.unpack_string, args={'ltype':Unpack.unpack_short, 'pad':4})
     """
     def __init__(self, data):
         """Constructor
@@ -108,6 +111,11 @@ class Unpack(object):
         """Get the number of bytes given from the working buffer and process
            it according to the given format.
            Return a tuple of unpack items, see struct.unpack.
+
+           size:
+               Length of data to process
+           fmt:
+               Format string on how to process data
         """
         return struct.unpack('!'+fmt, self.rawdata(size))
 
@@ -149,21 +157,15 @@ class Unpack(object):
                If given, string is padded to this byte boundary
         """
         # Process positional arguments
-        ltype = self.unpack_uint
+        ltype = Unpack.unpack_uint
         if len(kwts):
             ltype = kwts[0]
         # Process named arguments
         ltype = kwds.pop('ltype', ltype)
         pad   = kwds.pop('pad', 0)
 
-        slen = ltype()
-        data = self.rawdata(slen)
-        if pad > 1:
-            # Discard padding bytes
-            rm = slen % pad
-            if rm > 0:
-               self.rawdata(pad - rm)
-        return data
+        slen = ltype(self)
+        return self.rawdata(slen, pad)
 
     def unpack_array(self, *kwts, **kwds):
         """Get a variable length array, the type of objects in the array
@@ -180,8 +182,8 @@ class Unpack(object):
                Named arguments to pass to unpack_item function [default: {}]
         """
         # Process positional arguments
-        unpack_item = self.unpack_uint
-        ltype       = self.unpack_uint
+        unpack_item = Unpack.unpack_uint
+        ltype       = Unpack.unpack_uint
         if len(kwts):
             unpack_item = kwts[0]
         if len(kwts) > 1:
@@ -194,12 +196,12 @@ class Unpack(object):
 
         ret = []
         # Get length of array
-        slen = ltype()
+        slen = ltype(self)
         while slen > 0:
             # Unpack each item in the array
-            ret.append(unpack_item(**uargs))
+            ret.append(unpack_item(self, **uargs))
             if islist:
-                slen = ltype()
+                slen = ltype(self)
             else:
                 slen -= 1
         return ret
