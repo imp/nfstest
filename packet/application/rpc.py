@@ -417,10 +417,10 @@ class RPC(GSS):
         if ret.flavor == AUTH_SYS:
             ret.size    = self.unpack_uint()
             ret.stamp   = self.unpack_uint()
-            ret.machine = self.unpack_string(pad=4)
+            ret.machine = self.unpack_opaque(maxcount=255)
             ret.uid     = self.unpack_uint()
             ret.gid     = self.unpack_uint()
-            ret.gids    = self.unpack_array(self.unpack_uint)
+            ret.gids    = self.unpack_array(maxcount=16)
         elif ret.flavor == RPCSEC_GSS:
             if not verifier:
                 ret.size        = self.unpack_uint()
@@ -428,10 +428,10 @@ class RPC(GSS):
                 ret.gss_proc    = self.unpack_uint()
                 ret.gss_seq_num = self.unpack_uint()
                 ret.gss_service = self.unpack_uint()
-                ret.gss_context = self.unpack_string()
+                ret.gss_context = self.unpack_opaque()
             else:
                 ret.size      = size
-                ret.gss_token = self.unpack_string(pad=4)
+                ret.gss_token = self.unpack_opaque()
         else:
             ret.size = self.unpack_uint()
             ret.data = self.rawdata(size)
