@@ -127,7 +127,7 @@ class GSS(BaseObj, Unpack):
             return GSS_Data(
                 _type = 0,
                 _proc = RPCSEC_GSS_INIT,
-                token = self.unpack_string(pad=4),
+                token = self.unpack_opaque(),
             )
 
     def _gss_data_reply(self):
@@ -147,11 +147,11 @@ class GSS(BaseObj, Unpack):
             return GSS_Data(
                 _type      = 1,
                 _proc      = RPCSEC_GSS_INIT,
-                context    = self.unpack_string(),
+                context    = self.unpack_opaque(),
                 major      = self.unpack_uint(),
                 minor      = self.unpack_uint(),
                 seq_window = self.unpack_uint(),
-                token      = self.unpack_string(pad=4),
+                token      = self.unpack_opaque(),
             )
 
     def decode_gss_data(self):
@@ -179,11 +179,11 @@ class GSS(BaseObj, Unpack):
             if self.type == CALL:
                 if self.credential.flavor == RPCSEC_GSS and self.credential.gss_proc == RPCSEC_GSS_DATA:
                     if self.credential.gss_service == rpc_gss_svc_integrity:
-                        gss = GSS_Checksum(token = self.unpack_string(pad=4))
+                        gss = GSS_Checksum(token = self.unpack_opaque())
             else:
                 if self.verifier.flavor == RPCSEC_GSS and self.verifier.gss_proc == RPCSEC_GSS_DATA:
                     if self.verifier.gss_service == rpc_gss_svc_integrity:
-                        gss = GSS_Checksum(token = self.unpack_string(pad=4))
+                        gss = GSS_Checksum(token = self.unpack_opaque())
             if gss is not None:
                 self._pktt.pkt.gssc = gss
         except:
