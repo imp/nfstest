@@ -23,7 +23,7 @@ from nfstest.test_util import TestUtil
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -969,9 +969,7 @@ class DioTest(TestUtil):
             IOvecs = iovec * nvecs
             vectors = eval(vec_str)
 
-            self.umount()
             self.trace_start()
-            self.mount()
             if write:
                 while len(self.files) < 4:
                     self.get_filename()
@@ -1003,15 +1001,18 @@ class DioTest(TestUtil):
         try:
             fd = None
             self.trace_open()
-            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=file, anyclaim=True)
-            save_index = self.pktt.index
-            if filehandle is None:
+            (filehandle, open_stateid, deleg_stateid) = self.find_open(filename=file, claimfh=self.file_handles[write], anyclaim=True)
+            if filehandle:
+                self.file_handles[write] = filehandle
+                save_index = self.pktt.index
+                self.stateid = deleg_stateid if deleg_stateid else open_stateid
+                (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
+                self.layout = loc_body
+                self.find_getdeviceinfo()
+                self.pktt.rewind(save_index)
+            elif self.file_handles[write] is None:
                 self.test(False, "Could not find OPEN for file")
-            stateid = deleg_stateid if deleg_stateid else open_stateid
-            (layoutget, layoutget_res, loc_body) = self.find_layoutget(filehandle)
-            self.layout = loc_body
-            self.find_getdeviceinfo()
-            self.pktt.rewind(save_index)
+
             dsismds = False
             for ds in self.dslist:
                 if self.server_ipaddr == ds['ipaddr'] and self.port == ds['port']:
@@ -1020,7 +1021,7 @@ class DioTest(TestUtil):
             xids = {}
             received = []
             pkt_hash = {}
-            while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(stateid))):
+            while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(self.stateid))):
                 ipaddr = self.pktt.pkt.ip.dst
                 port   = self.pktt.pkt.tcp.dst_port
                 xid    = self.pktt.pkt.rpc.xid
@@ -1086,9 +1087,8 @@ class DioTest(TestUtil):
             if fd:
                 fd.close()
             self.free_buffers()
-            self.umount()
 
-    def vectored_io_test(self):
+    def _vectored_io_test(self):
         """Verify vectored I/O functionality."""
         for write in self.io_list:
             #=======================================================================
@@ -1476,6 +1476,16 @@ class DioTest(TestUtil):
                 {'size':self.rsize-self.PAGESIZE/2, 'aligned':True},
             ]
             self.vectored_io(tinfo, write=write, offset=self.PAGESIZE/2, contiguous=True)
+
+    def vectored_io_test(self):
+        """Verify vectored I/O functionality."""
+        self.file_handles = {False:None, True:None}
+        self.umount()
+        try:
+            self.mount()
+            self._vectored_io_test()
+        finally:
+            self.umount()
 
 ################################################################################
 #  Entry point
