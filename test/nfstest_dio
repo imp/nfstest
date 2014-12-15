@@ -138,6 +138,12 @@ class DioTest(TestUtil):
         self.opts.add_option("--biotype", default='none,read,write', help="List of buffered I/O types to test [default: '%default']")
         self.opts.add_option("--withdeleg", default='false,true', help="Use delegation on tests [default: both without and with delegation]")
         self.scan_options()
+
+        # Flag which defines if client is using new style direct I/O where
+        # the use of non-aligned buffers result in sending the I/O to the
+        # DS instead of the MDS
+        self.newstyle = False
+
         if self.nfsversion != 4:
             self.config("Option nfsversion must be 4")
 
@@ -748,7 +754,7 @@ class DioTest(TestUtil):
                     taligned = test_hash[idx].get('aligned')
                     self.test(toffset == roffset and tsize == rsize, "%s (%d@%d) should be sent with correct offset and count" % (io_str, tsize, toffset), failmsg=", got packet (%d@%d)" %(rsize, roffset))
                     if len(align_hash):
-                        if taligned and self.ispnfs:
+                        if (self.newstyle or taligned) and self.ispnfs:
                             dsidx = 0
                             ds_index = None
                             for ds in self.dslist:
@@ -824,7 +830,10 @@ class DioTest(TestUtil):
                         bstr = "" if bwrite is None else " and having %s buffered I/O to another file" % bio_str
                         if self.ispnfs:
                             ds_str   = "correct %s" % mds_map[DS]
-                            mds_str  = mds_map[MDS]
+                            if self.newstyle:
+                                mds_str  = ds_str
+                            else:
+                                mds_str  = mds_map[MDS]
                             both_str = "both %s and correct %s" % (mds_map[MDS], mds_map[DS])
                         else:
                             ds_str   = mds_map[SERVER]
@@ -895,7 +904,7 @@ class DioTest(TestUtil):
         """
         self.basic_dio('stripesize')
 
-    def vectored_io(self, tinfo, offset=0, contiguous=False, write=False):
+    def vectored_io(self, tinfo, offset=0, contiguous=False, write=False, check=False):
         """Verify vectored I/O functionality.
 
            tinfo:
@@ -912,6 +921,9 @@ class DioTest(TestUtil):
                Vectors are contiguous if true [default: False]
            write:
                Test writing if true, otherwise test reading [default: False]
+           check:
+               Run the test but don't PASS/FAIL it, just return a list of
+               all I/O sizes sent to the server [default: False]
         """
         try:
             # Generate test hash
@@ -920,9 +932,20 @@ class DioTest(TestUtil):
             head_vec = []
             test_hash = []
             total_size = 0
+
+            if self.newstyle and contiguous:
+                tlist = [item for item in tinfo if item["aligned"]]
+                if len(tlist) == 0 or len(tlist) == len(tinfo):
+                    # All vectors have the same alignment
+                    tinfo[0]["server"] = DS
+                    for item in tinfo[1:]:
+                        item.pop("server", None)
+
             for item in tinfo:
                 server = item.get('server')
                 if server != None:
+                    if self.newstyle and server == MDS:
+                        server = DS
                     test_hash.append({'server':server, 'size':item['size'], 'offset':off})
                 else:
                     test_hash[-1]['size'] += item['size']
@@ -942,7 +965,8 @@ class DioTest(TestUtil):
             io_str  = "WRITE" if write else "READ"
             io_mode = posix.O_WRONLY|posix.O_CREAT if write else posix.O_RDONLY
             io_op   = OP_WRITE if write else OP_READ
-            self.test_group("Verify %s %s%scontiguous vector [%s]" % (io_str, off_str, con_str, ", ".join(head_vec)))
+            if not check:
+                self.test_group("Verify %s %s%scontiguous vector [%s]" % (io_str, off_str, con_str, ", ".join(head_vec)))
 
             self.dprint('DBG3', "Create buffers")
             idx = 0
@@ -1010,7 +1034,7 @@ class DioTest(TestUtil):
                 self.layout = loc_body
                 self.find_getdeviceinfo()
                 self.pktt.rewind(save_index)
-            elif self.file_handles[write] is None:
+            elif not check and self.file_handles[write] is None:
                 self.test(False, "Could not find OPEN for file")
 
             dsismds = False
@@ -1019,6 +1043,7 @@ class DioTest(TestUtil):
                     dsismds = True
                     break
             xids = {}
+            ret = []
             received = []
             pkt_hash = {}
             while self.pktt.match("NFS.argop == %d and NFS.stateid.other == '%s'" % (io_op, self.pktt.escape(self.stateid))):
@@ -1042,6 +1067,10 @@ class DioTest(TestUtil):
                 off = self.pktt.pkt.NFSop.offset
                 pkt_hash[off] = {'server':rserver, 'size':rsize}
                 received.append("%s(%d)" % (mds_map[rserver], rsize))
+                ret.append(rsize)
+
+            if check:
+                return ret
 
             dsmsg = " where DS == MDS" if dsismds else ""
             self.dprint('INFO', "Client sent [%s]%s" % (", ".join(received), dsmsg))
@@ -1544,6 +1573,20 @@ try:
         x.dprint('INFO', "READ  delegations are not available -- skipping tests expecting read  delegations")
     if not x.write_deleg:
         x.dprint('INFO', "WRITE delegations are not available -- skipping tests expecting write delegations")
+
+    # Non-aligned contiguous vectors on aligned offset
+    x.file_handles = {False:None, True:None}
+    tinfo = [
+        {'size':x.rsize, 'aligned':False, 'server':MDS},
+        {'size':x.rsize, 'aligned':False, 'server':MDS},
+        {'size':x.rsize, 'aligned':False, 'server':MDS},
+    ]
+    x.mount()
+    out = x.vectored_io(tinfo, write=False, contiguous=True, check=True)
+    x.umount()
+    x.newstyle = len(out) == 1 and out[0] == 3*x.rsize
+    if x.newstyle:
+        x.dprint('INFO', "Direct I/O data is sent to the DS regardless of buffer alignment")
 
     # Run all the tests
     x.run_tests()
