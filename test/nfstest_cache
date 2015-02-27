@@ -305,7 +305,7 @@ class CacheTest(TestUtil):
         if data_cache:
             rdata = os.listdir(self.testdir)
             cache_str = "directory listing"
-            test_expr = rdata == dirlist
+            test_expr = set(rdata) == set(dirlist)
         else:
             fstat = os.stat(self.testdir)
             rdata = "[nlink %d]" % fstat.st_nlink
