@@ -33,7 +33,7 @@ from packet.nfs.nfs4_const import *
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.5'
+__version__   = '1.0.6'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -221,8 +221,10 @@ class NFSUtil(Host):
 
             # Make sure tcpdump has started
             out = self.traceproc.stderr.readline()
-            if re.search('not found', out):
-                raise Exception(out)
+            if not re.search('listening on', out):
+                time.sleep(1)
+                if self.process.poll() is not None:
+                    raise Exception(out)
         return self.tracefile
 
     def trace_stop(self):
