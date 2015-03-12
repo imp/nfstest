@@ -32,7 +32,7 @@ from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.4'
+__version__   = '1.0.5'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -206,7 +206,7 @@ class Host(BaseObj):
             cmd = self.sudo_cmd(cmd)
 
         if not self._localhost:
-            cmd = 'ssh -t %s%s "%s"' % (user, self.host, cmd.replace('"', '\\"'))
+            cmd = 'ssh -t -t %s%s "%s"' % (user, self.host, cmd.replace('"', '\\"'))
 
         self.dprint(dlevel, msg + cmd)
         self.process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -464,14 +464,12 @@ class Host(BaseObj):
             self.run_cmd(cmd, sudo=True, dlevel='DBG6', msg="Network reset: ")
         except:
             self.dprint('DBG6', "Network reset error <%s>" % self.perror)
-            pass
 
         try:
             cmd = "%s --delete-chain" % self.iptables
             self.run_cmd(cmd, sudo=True, dlevel='DBG6', msg="Network reset: ")
         except:
             self.dprint('DBG6', "Network reset error <%s>" % self.perror)
-            pass
 
     @staticmethod
     def get_ip_address(host='', ipv6=False):
@@ -489,4 +487,3 @@ class Host(BaseObj):
             if info[0] == family and info[4][0] not in ('127.0.0.1', '::1'):
                 return info[4][0]
         raise Exception("Unable to get IP%s address for host '%s'" % (ipstr, host))
-
