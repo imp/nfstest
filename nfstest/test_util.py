@@ -132,7 +132,7 @@ class TestUtil(NFSUtil):
 
            Initialize object's private data.
 
-           id:
+           sid:
                Test script ID [default: '']
                This is used to have options targeted for a given ID without
                including these options in any other test script.
@@ -151,7 +151,7 @@ class TestUtil(NFSUtil):
                x.basic_test()
                x.lock_test()
         """
-        self.id        = kwargs.pop('id', "")
+        self.sid       = kwargs.pop('sid', "")
         self.usage     = kwargs.pop('usage', '')
         self.testnames = kwargs.pop('testnames', [])
         self.progname = os.path.basename(sys.argv[0])
@@ -445,7 +445,7 @@ class TestUtil(NFSUtil):
                             bcount += 1
                             if idblock is None:
                                 idblock = name
-                            elif idblock == self.id:
+                            elif idblock == self.sid:
                                 # Open a testblock only if testblock is located
                                 # inside an idblock correspondig to script ID
                                 testblock = name
@@ -464,7 +464,7 @@ class TestUtil(NFSUtil):
                                 self.testopts[testblock].append(line)
                             else:
                                 self.testopts[testblock][name] = value
-                        elif idblock is None or idblock == self.id:
+                        elif idblock is None or idblock == self.sid:
                             # Include all general options and options given
                             # by the block specified by the correct script ID
                             argv.append("--%s=%s" % (name, value))
@@ -474,7 +474,7 @@ class TestUtil(NFSUtil):
                             self.testopts[testblock].append(name)
                         else:
                             self.testopts[testblock][name] = True
-                    elif idblock is None or (idblock == self.id and testblock is None):
+                    elif idblock is None or (idblock == self.sid and testblock is None):
                         # Include all general options and options given
                         # by the block specified by the correct script ID
                         argv.append("--%s" % name)

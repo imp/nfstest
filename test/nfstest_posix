@@ -48,6 +48,9 @@ Notes:
     The user id in the local host must have access to run commands as root
     using the 'sudo' command without the need for a password."""
 
+# Test script ID
+SCRIPT_ID = "POSIX"
+
 TESTNAMES = [
     'access',
     'chdir',
@@ -1610,7 +1613,7 @@ class PosixTest(TestUtil):
 
 ################################################################################
 #  Entry point
-x = PosixTest(usage=USAGE, testnames=TESTNAMES, id="POSIX")
+x = PosixTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
 x.setup(nfiles=2)
 
 x.umount()
