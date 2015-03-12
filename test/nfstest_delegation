@@ -66,6 +66,9 @@ Notes:
     The user id must be able to 'ssh' to remote host without the need for
     a password."""
 
+# Test script ID
+SCRIPT_ID = "DELEGATION"
+
 TESTNAMES = [
     'read',
     'write',
@@ -586,7 +589,7 @@ class DelegTest(TestUtil):
 
 ################################################################################
 #  Entry point
-x = DelegTest(usage=USAGE, testnames=TESTNAMES)
+x = DelegTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
 x.setup(nfiles=2)
 
 try:
