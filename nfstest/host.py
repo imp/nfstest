@@ -471,6 +471,20 @@ class Host(BaseObj):
         except:
             self.dprint('DBG6', "Network reset error <%s>" % self.perror)
 
+    def get_route(self, ipaddr):
+        """Get routing information for destination IP address
+           Returns a tuple: (gateway, device name, src IP address)
+        """
+        try:
+            cmd = "ip route get %s" % ipaddr
+            out = self.run_cmd(cmd, dlevel='DBG1', msg="Get routing info: ")
+            regex = re.search(r"(\svia\s+(\S+))?\sdev\s+(\S+).*\ssrc\s+(\S+)", out)
+            if regex:
+                return regex.groups()[1:]
+        except:
+            self.dprint('DBG7', self.perror)
+        return (None, None, None)
+
     @staticmethod
     def get_ip_address(host='', ipv6=False):
         """Get IP address associated with the given host name.
