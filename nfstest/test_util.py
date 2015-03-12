@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.8'
+__version__   = '1.0.9'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -266,7 +266,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("-m", "--mtpoint", default=self.mtpoint, help="Mount point [default: '%default']")
         self.opts.add_option("--datadir", default=self.datadir, help="Data directory where files are created [default: '%default']")
         self.opts.add_option("-o", "--mtopts", default=self.mtopts, help="Mount options [default: '%default']")
-        self.opts.add_option("-i", "--interface", default=self.interface, help="Device interface [default: '%default']")
+        self.opts.add_option("-i", "--interface", default=None, help="Device interface [default: '%default']")
         self.opts.add_option("-v", "--verbose", default="none", help="Verbose level [default: '%default']")
         self.opts.add_option("--nocleanup", action="store_true", default=False, help="Do not cleanup")
         self.opts.add_option("--rmtraces", action="store_true", default=False, help="Remove trace files [default: remove trace files if no errors]")
@@ -529,6 +529,14 @@ class TestUtil(NFSUtil):
             self.server_ipaddr = self.get_ip_address(host=self.server, ipv6=ipv6)
             # Get IP address of client
             self.client_ipaddr = self.get_ip_address(ipv6=ipv6)
+            if self.interface is None:
+                out = self.get_route(self.server_ipaddr)
+                if out[1] is not None:
+                    self.interface = out[1]
+                    if out[2] is not None:
+                        self.client_ipaddr = out[2]
+                else:
+                    self.interface = c.NFSTEST_INTERFACE
             self.ipaddr = self.client_ipaddr
             if self.nfsversion < 4:
                 self.minorversion = 0
@@ -1106,4 +1114,3 @@ class TestUtil(NFSUtil):
             except Exception, e:
                 self.warning("Unable to get lock on file: %r" % e)
         return ret
-
