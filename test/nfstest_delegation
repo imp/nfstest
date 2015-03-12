@@ -22,7 +22,7 @@ from nfstest.test_util import TestUtil
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -72,6 +72,8 @@ SCRIPT_ID = "DELEGATION"
 TESTNAMES = [
     'read',
     'write',
+    'read_stat',
+    'write_stat',
     'read_lock',
     'write_lock',
     'read_recall_write',
@@ -187,7 +189,7 @@ class DelegTest(TestUtil):
         cmd += "fdko.close()\""
         return self.clientobj.run_cmd(cmd)
 
-    def setup_test(self, deleg_type):
+    def setup_test(self, deleg_type, existing=False):
         """Setup test by mounting server and hold open a file so that the open
            owner sticks around so a delegation is granted on next open using
            the same open owner -- this is done to avoid a bug on the client
@@ -208,10 +210,13 @@ class DelegTest(TestUtil):
             # Use existing file
             self.filename = self.files[1]
             self.absfile = self.abspath(self.filename)
+        elif existing:
+            # Use existing file for writing
+            self.filename = self.files[2]
+            self.absfile = self.abspath(self.filename)
         else:
             # Create new file
-            self.filename = self.get_filename()
-            self.absfile = self.absfile
+            self.get_filename()
 
         # Hold a file open so that the open owner sticks around
         # (bug on the client where OO's are reaped at close)
@@ -234,15 +239,24 @@ class DelegTest(TestUtil):
             dsindex += 1
         return nio
 
-    def basic_deleg_test(self, deleg_type, lock=False):
+    def basic_deleg_test(self, deleg_type, lock=False, stat=False, existing=False):
         """Basic delegation tests"""
         try:
             fds = []
             self.fdko = None
             mode_str = open_mode_str(deleg_type)
-            lock_str = " with file lock" if lock else ""
-            self.test_group("Basic %s delegation tests%s" % (mode_str, lock_str))
-            self.setup_test(deleg_type)
+            if lock:
+                extra_str = " with file lock"
+            elif stat:
+                extra_str = " with file stat"
+            else:
+                extra_str = ""
+            self.test_group("Basic %s delegation tests%s" % (mode_str, extra_str))
+            self.setup_test(deleg_type, existing=existing)
+
+            if stat:
+                self.dprint('DBG3', "Stat file %s to cache file metadata" % self.absfile)
+                fstat = os.stat(self.absfile)
 
             # Open file, should get a DELEGATION
             fds.append(self.open_file(self.absfile, deleg_type, lock=lock))
@@ -539,6 +553,14 @@ class DelegTest(TestUtil):
         """Basic write delegation test"""
         self.basic_deleg_test(OPEN_DELEGATE_WRITE)
 
+    def read_stat_test(self):
+        """Basic read delegation test with file stat"""
+        self.basic_deleg_test(OPEN_DELEGATE_READ, stat=True)
+
+    def write_stat_test(self):
+        """Basic write delegation test with file stat"""
+        self.basic_deleg_test(OPEN_DELEGATE_WRITE, stat=True, existing=True)
+
     def read_lock_test(self):
         """Basic read delegation test with file lock"""
         self.basic_deleg_test(OPEN_DELEGATE_READ, lock=True)
@@ -590,7 +612,7 @@ class DelegTest(TestUtil):
 ################################################################################
 #  Entry point
 x = DelegTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
-x.setup(nfiles=2)
+x.setup(nfiles=3)
 
 try:
     # Run all the tests
