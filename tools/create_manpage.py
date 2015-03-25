@@ -402,15 +402,30 @@ def create_manpage(src, dst):
     all_modules += c.NFSTEST_SCRIPTS if is_script or progname == 'NFStest' else []
     see_also += _get_see_also(src, all_modules, local_mods)
 
+    # Get a list of functions included from imported modules
+    mod_funcs = []
+    for mod in modules:
+        data = mod.split(".")
+        if len(data) > 1:
+            mod_funcs.append(data[-1])
+
     func_desc = []
     functions = []
+    is_local_function = False
     for line in _lstrip(func_list):
-        if re.search(r'^\w+(\s+=\s+\w+)?\(', line):
+        regex = re.search(r'(\w+)\((.*)\)', line)
+        if regex:
+            data = regex.groups()
+            is_local_function = False
             functions += _process_func(func_desc)
             func_desc = []
-            functions.append('.TP')
-            functions.append('.B %s' % line)
-        else:
+            if data[1] != "..." or data[0] not in mod_funcs:
+                # Only include functions defined locally,
+                # do not include any function from imported modules
+                functions.append('.TP')
+                functions.append('.B %s' % line)
+                is_local_function = True
+        elif is_local_function:
             func_desc.append(line)
     functions += _process_func(func_desc)
 
