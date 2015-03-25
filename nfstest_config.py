@@ -111,6 +111,7 @@ NFSTEST_SCRIPTS = [
 ]
 NFSTEST_ALLMODS = [
     'baseobj.py',
+    'formatstr.py',
     'nfstest/host.py',
     'nfstest/nfs_util.py',
     'nfstest/test_util.py',
