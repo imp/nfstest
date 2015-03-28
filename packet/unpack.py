@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.5'
+__version__   = '1.0.6'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -247,3 +247,22 @@ class Unpack(object):
         """
         kwds['islist'] = True
         return self.unpack_array(*kwts, **kwds)
+
+    def unpack_conditional(self, unpack_item=unpack_uint, ltype=unpack_uint, args={}):
+        """Get an item if condition flag given by ltype is true, if condition
+           flag is false then return None
+
+           unpack_item:
+               Unpack function for item if condition is true [default: unpack_uint]
+               Given as the first positional argument or as a named argument
+           ltype:
+               Function to decode the condition flag [default: unpack_uint]
+               Given as the second positional argument or as a named argument
+           args:
+               Named arguments to pass to unpack_item function [default: {}]
+        """
+        # Get condition flag
+        if self._get_ltype(ltype):
+            # Unpack item if condition is true
+            return unpack_item(self, **args)
+        return None
