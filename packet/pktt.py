@@ -234,12 +234,12 @@ class Pktt(BaseObj, Unpack):
             self.pkt_map.append(self.offset)
 
         # Get record header
-        rec_keys = ('seconds', 'msecs', 'length_inc', 'length_orig')
+        rec_keys = ('seconds', 'usecs', 'length_inc', 'length_orig')
         header = self._read(16)
         if len(header) < 16:
             raise StopIteration
         self.pkt.record = Record(rec_keys, struct.unpack(self.header_rec, header))
-        secs = float(self.pkt.record.seconds) + float(self.pkt.record.msecs)/1000000.0
+        secs = float(self.pkt.record.seconds) + float(self.pkt.record.usecs)/1000000.0
         if self.tstart is None:
             self.tstart = secs
         self.pkt.record.secs = secs - self.tstart
