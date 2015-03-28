@@ -22,18 +22,19 @@ to add debug levels.
 """
 import re
 import nfstest_config as c
-from pprint import pformat,pprint
+from pprint import pformat
+from formatstr import FormatStr
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 # Module variables
 _dindent = 0
 _dlevel = 0
-_rlevel = 0
+_rlevel = 1
 _logfh = None
 # Simple verbose level names
 _debug_map = {
@@ -55,7 +56,7 @@ def _init_debug():
         _debug_prefix[(2 << i)] = dbg.upper() + ': '
 _init_debug()
 
-class BaseObj(object):
+class BaseObj(FormatStr):
     """Base class so objects will inherit the methods which provide the string
        representation of the object and a simple debug printing and logging
        mechanism.
@@ -244,4 +245,3 @@ class BaseObj(object):
                 ret = ret.replace("\n", "\n"+sp)
             print ret
             self.write_log(ret)
-
