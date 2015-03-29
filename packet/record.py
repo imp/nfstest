@@ -16,24 +16,15 @@ Record module
 
 Provides the object for a record and the string representation of the record
 in a tcpdump trace file.
-
-Record object attributes:
-    Record(
-        index       = Frame number
-        length_inc  = Number of bytes included in trace
-        length_orig = Number of bytes in packet
-        seconds     = Seconds
-        usecs       = Microseconds
-        secs        = Seconds relative to first packet
-    )
 """
 import time
+import struct
 import nfstest_config as c
 from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -43,8 +34,48 @@ class Record(BaseObj):
        Usage:
            from packet.record import Record
 
-           x = Record()
+           x = Record(pktt, data)
+
+       Object definition:
+
+       Record(
+           index       = int,   # Frame number
+           seconds     = int,   # Seconds
+           usecs       = int,   # Microseconds
+           length_inc  = int,   # Number of bytes included in trace
+           length_orig = int,   # Number of bytes in packet
+           secs        = float, # Absolute seconds including microseconds
+           rsecs       = float, # Seconds relative to first packet
+       )
     """
+    def __init__(self, pktt, data):
+        """Constructor
+
+           Initialize object's private data.
+
+           pktt:
+               Packet trace object (packet.pktt.Pktt) so this layer has
+               access to the parent layers.
+           data:
+               Raw packet data for this layer.
+        """
+        # Decode record header
+        ulist = struct.unpack(pktt.header_rec, data)
+        self.index       = pktt.index
+        self.seconds     = ulist[0]
+        self.usecs       = ulist[1]
+        self.length_inc  = ulist[2]
+        self.length_orig = ulist[3]
+        pktt.pkt.record = self
+        # Seconds + microseconds
+        self.secs = float(self.seconds) + float(self.usecs)/1000000.0
+
+        if pktt.tstart is None:
+            # This is the first packet
+            pktt.tstart = self.secs
+        # Seconds relative to first packet
+        self.rsecs = self.secs - pktt.tstart
+
     def __str__(self):
         """String representation of object
 

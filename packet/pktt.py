@@ -234,19 +234,15 @@ class Pktt(BaseObj, Unpack):
             self.pkt_map.append(self.offset)
 
         # Get record header
-        rec_keys = ('seconds', 'usecs', 'length_inc', 'length_orig')
-        header = self._read(16)
-        if len(header) < 16:
+        data = self._read(16)
+        if len(data) < 16:
             raise StopIteration
-        self.pkt.record = Record(rec_keys, struct.unpack(self.header_rec, header))
-        secs = float(self.pkt.record.seconds) + float(self.pkt.record.usecs)/1000000.0
-        if self.tstart is None:
-            self.tstart = secs
-        self.pkt.record.secs = secs - self.tstart
+        # Decode record header
+        record = Record(self, data)
 
         # Get the data
-        self.data = self._read(self.pkt.record.length_inc)
-        if len(self.data) < self.pkt.record.length_inc:
+        self.data = self._read(record.length_inc)
+        if len(self.data) < record.length_inc:
             raise StopIteration
 
         if self.header.link_type == 1:
@@ -254,10 +250,7 @@ class Pktt(BaseObj, Unpack):
             ETHERNET(self)
         else:
             # Unknown link layer
-            self.pkt.record.data = self.data
-
-        # Save record index
-        self.pkt.record.index = self.index
+            record.data = self.data
 
         # Increment packet index
         self.index += 1
