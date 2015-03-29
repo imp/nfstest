@@ -189,6 +189,7 @@ class TCP(BaseObj):
     def _decode_payload(self, pktt, stream):
         """Decode TCP payload."""
         rpc = None
+        pkt = pktt.pkt
         if stream['frag_off'] > 0 and len(stream['msfrag']) == 0:
             # This RPC packet lies within previous TCP packet,
             # Re-position the offset of the data
@@ -235,7 +236,8 @@ class TCP(BaseObj):
 
         rpcsize = rpc.fragment_hdr.size
 
-        if ldata < rpcsize:
+        truncbytes = pkt.record.length_orig - pkt.record.length_inc
+        if truncbytes == 0 and ldata < rpcsize:
             # An RPC fragment is missing to decode RPC payload
             stream['msfrag'] += save_data
         else:
@@ -243,12 +245,12 @@ class TCP(BaseObj):
                 stream['frag_off'] = 0
             stream['msfrag'] = ''
             # Save RPC layer on packet object
-            pktt.pkt.rpc = rpc
+            pkt.rpc = rpc
 
             # Decode NFS layer
             nfs = rpc.decode_nfs()
             if nfs:
-                pktt.pkt.nfs = nfs
+                pkt.nfs = nfs
             rpcbytes = ldata - len(pktt.data)
             if not nfs and rpcbytes != rpcsize:
                 pass
