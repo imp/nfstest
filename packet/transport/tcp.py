@@ -119,12 +119,10 @@ class TCP(BaseObj):
             # frag_off: Keep track of multiple RPC packets within
             #           a single TCP packet
             pktt._tcp_stream_map[streamid] = {
-                'seq_base': self.seq_number,
-                'smap':     {},
-                'pindex':   pktt.index,
                 'msfrag':   '',
                 'frag_off': 0,
                 'last_seq': 0,
+                'seq_base': self.seq_number,
             }
 
         # De-reference stream map
@@ -150,30 +148,7 @@ class TCP(BaseObj):
             # This is a re-transmission, do not process
             return
 
-        # Save data
-        save_data = pktt.data
-
-        # Expected data segment sequence number
-        nseg = self.seq - stream['last_seq']
-
-        # Make sure this segment has valid data
-        if nseg != len(stream['msfrag']) and \
-           len(pktt.data) <= 20 and pktt.data == '\x00' * len(pktt.data):
-            save_data = ""
-
-        # Append segment to the stream map
-        if pktt.index == pktt.mindex:
-            smap = stream['smap']
-            if len(stream['msfrag']) == 0 and stream['frag_off'] == 0:
-                stream['pindex'] = pktt.index
-            else:
-                smap_item = [stream['pindex'], stream['frag_off']]
-                smap[pktt.index] = smap_item
-
         self._decode_payload(pktt, stream)
-
-        if getattr(pktt.pkt, 'rpc', None) or len(save_data) == 0:
-            stream['pindex'] = pktt.index
 
         if self.length > 0:
             stream['last_seq'] = seq
