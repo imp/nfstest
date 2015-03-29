@@ -122,6 +122,7 @@ class TCP(BaseObj):
                 'msfrag':   '',
                 'frag_off': 0,
                 'last_seq': 0,
+                'seq_wrap': 0,
                 'seq_base': self.seq_number,
             }
 
@@ -131,10 +132,14 @@ class TCP(BaseObj):
         if self.flags.SYN:
             # Reset seq_base on SYN
             stream['seq_base'] = self.seq_number
-            stream['last_seq'] = 0
+            stream['last_seq'] = stream['seq_wrap']
 
         # Convert sequence numbers to relative numbers
-        seq = self.seq_number - stream['seq_base']
+        seq = self.seq_number - stream['seq_base'] + stream['seq_wrap']
+        if seq < 0:
+            # Sequence number has reached the maximum and wrapped around
+            stream['seq_wrap'] += 4294967296
+            seq += 4294967296
         self.seq = seq
 
         if count > 20:
