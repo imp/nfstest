@@ -20,11 +20,10 @@ import struct
 import nfstest_config as c
 from baseobj import BaseObj
 from packet.transport.tcp import TCP
-from packet.unpack import Unpack
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -34,13 +33,13 @@ _IP_map = {1:'ICMP', 2:'IGMP', 6:'TCP', 17:'UDP' }
 class TOS(BaseObj): pass
 class Flags(BaseObj): pass
 
-class IPv4(BaseObj, Unpack):
+class IPv4(BaseObj):
     """IPv4 object
 
        Usage:
            from packet.internet.ipv4 import IPv4
 
-           x = IPv4(pktt, buffer)
+           x = IPv4(pktt)
 
        Object definition:
 
@@ -74,7 +73,7 @@ class IPv4(BaseObj, Unpack):
                              # is not supported
        )
     """
-    def __init__(self, pktt, data):
+    def __init__(self, pktt):
         """Constructor
 
            Initialize object's private data.
@@ -82,16 +81,13 @@ class IPv4(BaseObj, Unpack):
            pktt:
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
-           data:
-               Raw packet data for this layer.
         """
-        self.data = data
         # Get the IP version and header length
-        temp = self.unpack(1, 'B')[0]
+        temp = pktt.unpack(1, 'B')[0]
         count = 4*(temp & 0x0F)
 
         # Decode IP header
-        ulist = self.unpack(19, 'BHHHBBH4s4s')
+        ulist = pktt.unpack(19, 'BHHHBBH4s4s')
         self.version         = (temp >> 4)
         self.IHL             = (temp & 0x0F)
         self.header_size     = count
@@ -121,13 +117,11 @@ class IPv4(BaseObj, Unpack):
         if count > 20:
             # Save IP options
             osize = count - 20
-            self.options = self.rawdata(osize)
+            self.options = pktt.rawdata(osize)
 
         if self.protocol == 6:
             # Decode TCP
-            TCP(pktt, self.data)
-            del self.data
-        return
+            TCP(pktt)
 
     def __str__(self):
         """String representation of object
@@ -151,4 +145,3 @@ class IPv4(BaseObj, Unpack):
         else:
             out = BaseObj.__str__(self)
         return out
-

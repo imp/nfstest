@@ -19,11 +19,10 @@ Decode TCP layer.
 import nfstest_config as c
 from baseobj import BaseObj
 from packet.application.rpc import RPC
-from packet.unpack import Unpack
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -40,13 +39,13 @@ _TCP_map = {
 
 class Flags(BaseObj): pass
 
-class TCP(BaseObj, Unpack):
+class TCP(BaseObj):
     """TCP object
 
        Usage:
            from packet.transport.tcp import TCP
 
-           x = TCP(pktt, buffer)
+           x = TCP(pktt)
 
        Object definition:
 
@@ -76,7 +75,7 @@ class TCP(BaseObj, Unpack):
            data = string,    # raw data of payload if unable to decode
        )
     """
-    def __init__(self, pktt, data):
+    def __init__(self, pktt):
         """Constructor
 
            Initialize object's private data.
@@ -84,12 +83,9 @@ class TCP(BaseObj, Unpack):
            pktt:
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
-           data:
-               Raw packet data for this layer.
         """
-        self.data = data
         # Decode the TCP layer header
-        ulist = self.unpack(20, 'HHIIBBHHH')
+        ulist = pktt.unpack(20, 'HHIIBBHHH')
         temp = ulist[4] >> 4
         count = 4*temp
         self.src_port    = ulist[0]
@@ -151,24 +147,24 @@ class TCP(BaseObj, Unpack):
 
         if count > 20:
             osize = count - 20
-            self.options = self.rawdata(osize)
+            self.options = pktt.rawdata(osize)
 
         # Save length of TCP segment
-        self.length = len(self.data)
+        self.length = len(pktt.data)
 
         if seq < stream['last_seq']:
             # This is a re-transmission, do not process
             return
 
         # Save data
-        save_data = self.data
+        save_data = pktt.data
 
         # Expected data segment sequence number
         nseg = self.seq - stream['last_seq']
 
         # Make sure this segment has valid data
         if nseg != len(stream['msfrag']) and \
-           len(self.data) <= 20 and self.data == '\x00' * len(self.data):
+           len(pktt.data) <= 20 and pktt.data == '\x00' * len(pktt.data):
             save_data = ""
 
         # Append segment to the stream map
@@ -187,7 +183,6 @@ class TCP(BaseObj, Unpack):
 
         if self.length > 0:
             stream['last_seq'] = seq
-        return
 
     def __str__(self):
         """String representation of object
@@ -223,18 +218,18 @@ class TCP(BaseObj, Unpack):
         if stream['frag_off'] > 0 and len(stream['msfrag']) == 0:
             # This RPC packet lies within previous TCP packet,
             # Re-position the offset of the data
-            self.data = self.data[stream['frag_off']:]
+            pktt.data = pktt.data[stream['frag_off']:]
 
         # Get the total size
-        save_data = self.data
-        size = len(self.data)
+        save_data = pktt.data
+        size = len(pktt.data)
 
         # Try decoding the RPC header before using the msfrag data
         # to re-sync the stream
         if len(stream['msfrag']) > 0:
-            rpc = RPC(pktt, self.data, proto=6)
+            rpc = RPC(pktt, proto=6)
             if not rpc:
-                self.data = save_data
+                pktt.data = save_data
 
         if rpc or (size == 0 and len(stream['msfrag']) > 0 and self.flags_raw != 0x10):
             # There has been some data lost in the capture,
@@ -253,11 +248,11 @@ class TCP(BaseObj, Unpack):
 
         if not rpc:
             # Concatenate previous fragment
-            self.data = stream['msfrag'] + self.data
-            ldata = len(self.data) - 4
+            pktt.data = stream['msfrag'] + pktt.data
+            ldata = len(pktt.data) - 4
 
             # Get RPC header
-            rpc = RPC(pktt, self.data, proto=6)
+            rpc = RPC(pktt, proto=6)
         else:
             ldata = size - 4
 
@@ -275,23 +270,22 @@ class TCP(BaseObj, Unpack):
             stream['msfrag'] = ''
             # Save RPC layer on packet object
             pktt.pkt.rpc = rpc
-            del self.data
 
             # Decode NFS layer
             nfs = rpc.decode_nfs()
             if nfs:
                 pktt.pkt.nfs = nfs
-            rpcbytes = ldata - len(rpc.data)
+            rpcbytes = ldata - len(pktt.data)
             if not nfs and rpcbytes != rpcsize:
                 pass
-            elif rpc.data:
+            elif pktt.data:
                 # Save the offset of next RPC packet within this TCP packet
                 # Data offset is cumulative
-                stream['frag_off'] += size - len(rpc.data)
-                save_data = rpc.data
-                ldata = len(rpc.data) - 4
+                stream['frag_off'] += size - len(pktt.data)
+                save_data = pktt.data
+                ldata = len(pktt.data) - 4
                 try:
-                    rpc_header = RPC(pktt, rpc.data, proto=6)
+                    rpc_header = RPC(pktt, proto=6)
                 except Exception:
                     rpc_header = None
                 if not rpc_header or ldata < rpc_header.fragment_hdr.size:

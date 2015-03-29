@@ -23,7 +23,7 @@ from packet.transport.tcp import TCP
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -33,7 +33,7 @@ class IPv6(IPv4):
        Usage:
            from packet.internet.ipv6 import IPv6
 
-           x = IPv6(pktt, buffer)
+           x = IPv6(pktt)
 
        Object definition:
 
@@ -51,7 +51,7 @@ class IPv6(IPv4):
                              # is not supported
        )
     """
-    def __init__(self, pktt, data):
+    def __init__(self, pktt):
         """Constructor
 
            Initialize object's private data.
@@ -59,24 +59,18 @@ class IPv6(IPv4):
            pktt:
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
-           data:
-               Raw packet data for this layer.
         """
-        self.data = data
-        ulist = self.unpack(8, 'IHBB')
+        ulist = pktt.unpack(8, 'IHBB')
         self.version       = (ulist[0] >> 28)
         self.traffic_class = (ulist[0] >> 20)&0xFF
         self.flow_label    = ulist[0]&0xFFF
         self.total_size    = ulist[1]
         self.protocol      = ulist[2]
         self.hop_limit     = ulist[3]
-        self.src           = IPv6Addr(self.rawdata(16).encode('hex'))
-        self.dst           = IPv6Addr(self.rawdata(16).encode('hex'))
+        self.src           = IPv6Addr(pktt.rawdata(16).encode('hex'))
+        self.dst           = IPv6Addr(pktt.rawdata(16).encode('hex'))
         pktt.pkt.ip = self
 
         if self.protocol == 6:
             # Decode TCP
-            TCP(pktt, self.data)
-            del self.data
-        return
-
+            TCP(pktt)

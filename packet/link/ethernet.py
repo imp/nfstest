@@ -21,11 +21,10 @@ from baseobj import BaseObj
 from macaddr import MacAddr
 from packet.internet.ipv4 import IPv4
 from packet.internet.ipv6 import IPv6
-from packet.unpack import Unpack
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.1'
+__version__   = '1.0.2'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -34,13 +33,13 @@ _ETHERNET_map = {
     0x86dd: 'IPv6',
 }
 
-class ETHERNET(BaseObj, Unpack):
+class ETHERNET(BaseObj):
     """Ethernet object
 
        Usage:
            from packet.link.ethernet import ETHERNET
 
-           x = ETHERNET(pktt, buffer)
+           x = ETHERNET(pktt)
 
        Object definition:
 
@@ -51,7 +50,7 @@ class ETHERNET(BaseObj, Unpack):
            data  = string,     # raw data of payload if type is not supported
        )
     """
-    def __init__(self, pktt, data):
+    def __init__(self, pktt):
         """Constructor
 
            Initialize object's private data.
@@ -59,25 +58,19 @@ class ETHERNET(BaseObj, Unpack):
            pktt:
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
-           data:
-               Raw packet data for this layer.
         """
-        self.data = data
-        self.dst  = MacAddr(self.rawdata(6).encode('hex'))
-        self.src  = MacAddr(self.rawdata(6).encode('hex'))
-        self.type = self.unpack(2, 'H')[0]
+        self.dst  = MacAddr(pktt.rawdata(6).encode('hex'))
+        self.src  = MacAddr(pktt.rawdata(6).encode('hex'))
+        self.type = pktt.unpack(2, 'H')[0]
         pktt.pkt.ethernet = self
 
         payload = None
         if self.type == 0x0800:
             # Decode IPv4 packet
-            payload = IPv4(pktt, self.data)
+            payload = IPv4(pktt)
         elif self.type == 0x86dd:
             # Decode IPv6 packet
-            payload = IPv6(pktt, self.data)
-        if payload:
-            del self.data
-        return
+            payload = IPv6(pktt)
 
     def __str__(self):
         """String representation of object
@@ -101,4 +94,3 @@ class ETHERNET(BaseObj, Unpack):
         else:
             out = BaseObj.__str__(self)
         return out
-

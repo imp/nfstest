@@ -251,7 +251,7 @@ class Pktt(BaseObj, Unpack):
 
         if self.header.link_type == 1:
             # Decode ethernet layer
-            ETHERNET(self, self.data)
+            ETHERNET(self)
         else:
             # Unknown link layer
             self.pkt.record.data = self.data
