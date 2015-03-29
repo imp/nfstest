@@ -111,14 +111,8 @@ class TCP(BaseObj):
         pktt.pkt.tcp = self
 
         # Stream identifier
-        streamid = self._streamid(pktt.pkt)
-
-        if not getattr(pktt, '_tcp_stream_map', None):
-            # TCP stream map: to keep track of the different TCP streams
-            # within the trace file -- used to deal with RPC packets spanning
-            # multiple TCP packets or to handle a TCP packet having multiple
-            # RPC packets
-            pktt._tcp_stream_map = {}
+        ip = pktt.pkt.ip
+        streamid = "%s:%d-%s:%d" % (ip.src, self.src_port, ip.dst, self.dst_port)
 
         if streamid not in pktt._tcp_stream_map:
             # msfrag: Keep track of RPC packets spanning multiple TCP packets
@@ -299,11 +293,3 @@ class TCP(BaseObj):
                     pktt._getfh().seek(pktt.offset)
             else:
                 stream['frag_off'] = 0
-
-    def _streamid(self, pkt):
-        """Get TCP streamid."""
-        streamid = "%s:%d-%s:%d" % (pkt.ip.src,
-                                    pkt.tcp.src_port,
-                                    pkt.ip.dst,
-                                    pkt.tcp.dst_port)
-        return streamid
