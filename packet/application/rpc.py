@@ -215,37 +215,23 @@ class RPC(GSS):
 
         self._rpc = True
         xid = self.xid
-        if not getattr(pktt, '_rpc_xid_map', None):
-            # NFS XID map: to keep track of call information
-            # (program, version, procedure, ...) and insert
-            # this information into the proper NFS reply
-            pktt._rpc_xid_map = {}
-        if xid not in pktt._rpc_xid_map:
-            # Initialize new xid
-            pktt._rpc_xid_map[xid] = {}
         if self.type == CALL:
-            # Save call info in the xid map
-            pktt._rpc_xid_map[xid]['program']    = self.program
-            pktt._rpc_xid_map[xid]['version']    = self.version
-            pktt._rpc_xid_map[xid]['procedure']  = self.procedure
-            pktt._rpc_xid_map[xid]['call_index'] = pktt.index
-            pktt._rpc_xid_map[xid]['flavor']     = self.credential.flavor
-            if self.credential.flavor == RPCSEC_GSS:
-                pktt._rpc_xid_map[xid]['gss_proc'] = self.credential.gss_proc
-                pktt._rpc_xid_map[xid]['gss_service'] = self.credential.gss_service
-                pktt._rpc_xid_map[xid]['gss_version'] = self.credential.gss_version
+            # Save call packet in the xid map
+            pktt._rpc_xid_map[xid] = pktt.pkt
+            pktt.pkt_call = None
         elif self.type == REPLY:
             try:
-                # Save reply info and retrieve call info
-                self.program    = pktt._rpc_xid_map[xid]['program']
-                self.version    = pktt._rpc_xid_map[xid]['version']
-                self.procedure  = pktt._rpc_xid_map[xid]['procedure']
-                self.call_index = pktt._rpc_xid_map[xid]['call_index']
-                if pktt._rpc_xid_map[xid]['flavor'] == RPCSEC_GSS:
-                    self.verifier.gss_proc = pktt._rpc_xid_map[xid]['gss_proc']
-                    self.verifier.gss_service = pktt._rpc_xid_map[xid]['gss_service']
-                    self.verifier.gss_version = pktt._rpc_xid_map[xid]['gss_version']
-                pktt._rpc_xid_map[xid]['reply_index'] = pktt.index
+                pkt_call = pktt._rpc_xid_map.get(self.xid, None)
+                rpc_header = pkt_call.rpc
+                pktt.pkt_call = pkt_call
+
+                self.program   = rpc_header.program
+                self.version   = rpc_header.version
+                self.procedure = rpc_header.procedure
+                if rpc_header.credential.flavor == RPCSEC_GSS:
+                    self.verifier.gss_proc    = rpc_header.credential.gss_proc
+                    self.verifier.gss_service = rpc_header.credential.gss_service
+                    self.verifier.gss_version = rpc_header.credential.gss_version
             except Exception:
                 pass
 

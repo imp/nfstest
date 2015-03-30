@@ -124,6 +124,12 @@ class Pktt(BaseObj, Unpack):
         # TCP packets or to handle a TCP packet having multiple RPC packets
         self._tcp_stream_map = {}
 
+        # RPC xid map: to keep track of packet calls
+        self._rpc_xid_map = {}
+
+        # The current packet call if self.pkt is a reply
+        self.pkt_call = None
+
     def __del__(self):
         """Destructor
 

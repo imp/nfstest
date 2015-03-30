@@ -246,6 +246,10 @@ class TCP(BaseObj):
             stream['msfrag'] = ''
             # Save RPC layer on packet object
             pkt.rpc = rpc
+            if rpc.type:
+                # Remove packet call from the xid map since reply has
+                # already been decoded
+                pktt._rpc_xid_map.pop(rpc.xid, None)
 
             # Decode NFS layer
             nfs = rpc.decode_nfs()
