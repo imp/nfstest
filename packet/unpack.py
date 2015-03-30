@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.6'
+__version__   = '2.0'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -33,8 +33,37 @@ class Unpack(object):
 
            x = Unpack(buffer)
 
-           # Get the 32 bytes from the working buffer
-           data = x.rawdata(32)
+           # Get 32 bytes from the working buffer and move the offset pointer
+           data = x.read(32)
+
+           # Get all the unprocessed bytes from the working buffer
+           # (all bytes starting from the offset pointer)
+           # Do not move the offset pointer
+           data = x.getbytes()
+
+           # Get all bytes from the working buffer from the given offset
+           # Do not move the offset pointer
+           data = x.getbytes(offset)
+
+           # Return the number of unprocessed bytes left in the working buffer
+           size = x.size()
+           size = len(x)
+
+           # Get the offset pointer
+           offset = x.tell()
+
+           # Set the offset pointer
+           x.seek(offset)
+
+           # Append the given data to the working buffer
+           x.append(data)
+
+           # Insert the given data to the working buffer right before the
+           # offset pointer. This resets the working buffer completely
+           # and the offset pointer is initialized to zero. It is like
+           # re-instantiating the object like:
+           #   x = Unpack(data + x.getbytes())
+           x.insert(data)
 
            # Unpack an 'unsigned short' (2 bytes)
            short_int = x.unpack(2, 'H')[0]
@@ -84,6 +113,11 @@ class Unpack(object):
            # Get a list of strings, the length of each string is given by
            # a short integer and each string is padded to a 4 byte boundary
            alist = x.unpack_list(Unpack.unpack_string, args={'ltype':Unpack.unpack_short, 'pad':4})
+
+           # Unpack a conditional, it unpacks a conditional flag first and
+           # if it is true it unpacks the item given and returns it. If the
+           # conditional flag decoded is false, the method returns None
+           buffer = x.unpack_conditional(Unpack.unpack_opaque)
     """
     def __init__(self, data):
         """Constructor
@@ -93,7 +127,8 @@ class Unpack(object):
            data:
                Raw packet data
         """
-        self.data = data
+        self._offset = 0
+        self._data = data
 
     def _get_ltype(self, ltype):
         """Get length of element"""
@@ -104,8 +139,45 @@ class Unpack(object):
             # A function is given, return output of function
             return ltype(self)
 
-    def rawdata(self, size, pad=0):
+    def size(self):
+        """Return the number of unprocessed bytes left in the working buffer"""
+        return len(self._data) - self._offset
+    __len__ = size
+
+    def tell(self):
+        """Get the offset pointer."""
+        return self._offset
+
+    def seek(self, offset):
+        """Set the offset pointer."""
+        slen = len(self._data)
+        if offset > slen:
+            offset = slen
+        self._offset = offset
+
+    def append(self, data):
+        """Append data to the working buffer."""
+        self._data += data
+
+    def insert(self, data):
+        """Insert data to the beginning of the current working buffer."""
+        self._data = data + self._data[self._offset:]
+        self._offset = 0
+
+    def getbytes(self, offset=None):
         """Get the number of bytes given from the working buffer.
+           Do not move the offset pointer.
+
+           offset:
+               Starting offset of data to return [default: current offset]
+        """
+        if offset is None:
+            return self._data[self._offset:]
+        return self._data[offset:]
+
+    def read(self, size, pad=0):
+        """Get the number of bytes given from the working buffer.
+           Move the offset pointer.
 
            size:
                Length of data to get
@@ -113,11 +185,11 @@ class Unpack(object):
                Get and discard padding bytes [default: 0]
                If given, data is padded to this byte boundary
         """
-        buf = self.data[0:size]
+        buf = self._data[self._offset:self._offset+size]
         if pad > 0:
             # Discard padding bytes
             size += (size+pad-1)/pad*pad - size
-        self.data = self.data[size:]
+        self._offset += size
         return buf
 
     def unpack(self, size, fmt):
@@ -130,7 +202,7 @@ class Unpack(object):
            fmt:
                Format string on how to process data
         """
-        return struct.unpack('!'+fmt, self.rawdata(size))
+        return struct.unpack('!'+fmt, self.read(size))
 
     def unpack_char(self):
         """Get an unsigned char"""
@@ -149,15 +221,15 @@ class Unpack(object):
         return self.unpack(8, 'Q')[0]
 
     def unpack_opaque(self, maxcount=0):
-        """Get a variable length opaque upto a maximum length of maxcount"""
+        """Get a variable length opaque up to a maximum length of maxcount"""
         size = self.unpack_uint()
         if maxcount > 0 and size > maxcount:
             raise Exception, "Opaque exceeds maximum length"
-        return self.rawdata(size, pad=4)
+        return self.read(size, pad=4)
 
     def unpack_fopaque(self, size):
         """Get a fixed length opaque"""
-        return self.rawdata(size, pad=4)
+        return self.read(size, pad=4)
 
     def unpack_string(self, *kwts, **kwds):
         """Get a variable length string
@@ -184,7 +256,7 @@ class Unpack(object):
         slen = self._get_ltype(ltype)
         if maxcount > 0 and slen > maxcount:
             raise Exception, "String exceeds maximum length"
-        return self.rawdata(slen, pad)
+        return self.read(slen, pad)
 
     def unpack_array(self, *kwts, **kwds):
         """Get a variable length array, the type of objects in the array
