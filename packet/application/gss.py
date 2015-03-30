@@ -26,7 +26,7 @@ from baseobj import BaseObj
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2013 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -114,20 +114,20 @@ class GSS(BaseObj):
         if self.credential.flavor != RPCSEC_GSS:
             # Not a GSS encoded packet
             return
-        pktt = self._pktt
+        unpack = self._pktt.unpack
         if self.credential.gss_proc == RPCSEC_GSS_DATA:
             if self.credential.gss_service == rpc_gss_svc_integrity:
                 return GSS_Data(
                     _type   = 0,
                     _proc   = RPCSEC_GSS_DATA,
-                    length  = pktt.unpack_uint(),
-                    seq_num = pktt.unpack_uint(),
+                    length  = unpack.unpack_uint(),
+                    seq_num = unpack.unpack_uint(),
                 )
         elif self.credential.gss_proc == RPCSEC_GSS_INIT:
             return GSS_Data(
                 _type = 0,
                 _proc = RPCSEC_GSS_INIT,
-                token = pktt.unpack_opaque(),
+                token = unpack.unpack_opaque(),
             )
 
     def _gss_data_reply(self):
@@ -135,31 +135,31 @@ class GSS(BaseObj):
         if self.verifier.flavor != RPCSEC_GSS or not hasattr(self.verifier, 'gss_proc'):
             # Not a GSS encoded packet
             return
-        pktt = self._pktt
+        unpack = self._pktt.unpack
         if self.verifier.gss_proc == RPCSEC_GSS_DATA:
             if self.verifier.gss_service == rpc_gss_svc_integrity:
                 return GSS_Data(
                     _type   = 1,
                     _proc   = RPCSEC_GSS_DATA,
-                    length  = pktt.unpack_uint(),
-                    seq_num = pktt.unpack_uint(),
+                    length  = unpack.unpack_uint(),
+                    seq_num = unpack.unpack_uint(),
                 )
         elif self.verifier.gss_proc == RPCSEC_GSS_INIT:
             return GSS_Data(
                 _type      = 1,
                 _proc      = RPCSEC_GSS_INIT,
-                context    = pktt.unpack_opaque(),
-                major      = pktt.unpack_uint(),
-                minor      = pktt.unpack_uint(),
-                seq_window = pktt.unpack_uint(),
-                token      = pktt.unpack_opaque(),
+                context    = unpack.unpack_opaque(),
+                major      = unpack.unpack_uint(),
+                minor      = unpack.unpack_uint(),
+                seq_window = unpack.unpack_uint(),
+                token      = unpack.unpack_opaque(),
             )
 
     def decode_gss_data(self):
         """Decode GSS data"""
         try:
             pktt = self._pktt
-            if len(pktt.data) < 4:
+            if pktt.unpack.size() < 4:
                 # Not a GSS encoded packet
                 return
             if self.type == CALL:
@@ -175,18 +175,19 @@ class GSS(BaseObj):
         """Decode GSS checksum"""
         try:
             pktt = self._pktt
-            if len(pktt.data) < 4:
+            unpack = pktt.unpack
+            if unpack.size() < 4:
                 # Not a GSS encoded packet
                 return
             gss = None
             if self.type == CALL:
                 if self.credential.flavor == RPCSEC_GSS and self.credential.gss_proc == RPCSEC_GSS_DATA:
                     if self.credential.gss_service == rpc_gss_svc_integrity:
-                        gss = GSS_Checksum(token = pktt.unpack_opaque())
+                        gss = GSS_Checksum(token = unpack.unpack_opaque())
             else:
                 if self.verifier.flavor == RPCSEC_GSS and self.verifier.gss_proc == RPCSEC_GSS_DATA:
                     if self.verifier.gss_service == rpc_gss_svc_integrity:
-                        gss = GSS_Checksum(token = pktt.unpack_opaque())
+                        gss = GSS_Checksum(token = unpack.unpack_opaque())
             if gss is not None:
                 pktt.pkt.gssc = gss
         except:

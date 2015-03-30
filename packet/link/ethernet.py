@@ -24,7 +24,7 @@ from packet.internet.ipv6 import IPv6
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -59,18 +59,21 @@ class ETHERNET(BaseObj):
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
         """
-        self.dst  = MacAddr(pktt.rawdata(6).encode('hex'))
-        self.src  = MacAddr(pktt.rawdata(6).encode('hex'))
-        self.type = pktt.unpack(2, 'H')[0]
+        unpack = pktt.unpack
+        ulist = unpack.unpack(14, '6s6sH')
+        self.dst  = MacAddr(ulist[0].encode('hex'))
+        self.src  = MacAddr(ulist[1].encode('hex'))
+        self.type = ulist[2]
         pktt.pkt.ethernet = self
 
-        payload = None
         if self.type == 0x0800:
             # Decode IPv4 packet
-            payload = IPv4(pktt)
+            IPv4(pktt)
         elif self.type == 0x86dd:
             # Decode IPv6 packet
-            payload = IPv6(pktt)
+            IPv6(pktt)
+        else:
+            self.data = unpack.getbytes()
 
     def __str__(self):
         """String representation of object

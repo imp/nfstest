@@ -23,7 +23,7 @@ from packet.transport.tcp import TCP
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -60,17 +60,20 @@ class IPv6(IPv4):
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
         """
-        ulist = pktt.unpack(8, 'IHBB')
+        unpack = pktt.unpack
+        ulist = unpack.unpack(40, 'IHBB16s16s')
         self.version       = (ulist[0] >> 28)
         self.traffic_class = (ulist[0] >> 20)&0xFF
         self.flow_label    = ulist[0]&0xFFF
         self.total_size    = ulist[1]
         self.protocol      = ulist[2]
         self.hop_limit     = ulist[3]
-        self.src           = IPv6Addr(pktt.rawdata(16).encode('hex'))
-        self.dst           = IPv6Addr(pktt.rawdata(16).encode('hex'))
+        self.src           = IPv6Addr(ulist[4].encode('hex'))
+        self.dst           = IPv6Addr(ulist[5].encode('hex'))
         pktt.pkt.ip = self
 
         if self.protocol == 6:
             # Decode TCP
             TCP(pktt)
+        else:
+            self.data = unpack.getbytes()

@@ -23,7 +23,7 @@ from packet.transport.tcp import TCP
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -82,46 +82,46 @@ class IPv4(BaseObj):
                Packet trace object (packet.pktt.Pktt) so this layer has
                access to the parent layers.
         """
-        # Get the IP version and header length
-        temp = pktt.unpack(1, 'B')[0]
-        count = 4*(temp & 0x0F)
-
         # Decode IP header
-        ulist = pktt.unpack(19, 'BHHHBBH4s4s')
-        self.version         = (temp >> 4)
-        self.IHL             = (temp & 0x0F)
+        unpack = pktt.unpack
+        ulist = unpack.unpack(20, 'BBHHHBBH4B4B')
+        count = 4*(ulist[0] & 0x0F)
+        self.version         = (ulist[0] >> 4)
+        self.IHL             = (ulist[0] & 0x0F)
         self.header_size     = count
-        self.total_size      = ulist[1]
-        self.id              = ulist[2]
-        self.fragment_offset = (ulist[3] & 0x1FFF)
-        self.TTL             = ulist[4]
-        self.protocol        = ulist[5]
-        self.checksum        = ulist[6]
-        self.src             = "%d.%d.%d.%d" % struct.unpack('!4B', ulist[7])
-        self.dst             = "%d.%d.%d.%d" % struct.unpack('!4B', ulist[8])
+        self.total_size      = ulist[2]
+        self.id              = ulist[3]
+        self.fragment_offset = (ulist[4] & 0x1FFF)
+        self.TTL             = ulist[5]
+        self.protocol        = ulist[6]
+        self.checksum        = ulist[7]
+        self.src             = "%d.%d.%d.%d" % ulist[8:12]
+        self.dst             = "%d.%d.%d.%d" % ulist[12:]
         self.TOS = TOS(
-            precedence    = (ulist[0] >> 5),
-            delay         = ((ulist[0] >> 4) & 0x01),
-            throughput    = ((ulist[0] >> 3) & 0x01),
-            reliability   = ((ulist[0] >> 2) & 0x01),
-            monetary_cost = ((ulist[0] >> 1) & 0x01),
+            precedence    = (ulist[1] >> 5),
+            delay         = ((ulist[1] >> 4) & 0x01),
+            throughput    = ((ulist[1] >> 3) & 0x01),
+            reliability   = ((ulist[1] >> 2) & 0x01),
+            monetary_cost = ((ulist[1] >> 1) & 0x01),
         )
-        self.DSCP = (ulist[0] >> 2)
-        self.ECN  = (ulist[0] & 0x03)
+        self.DSCP = (ulist[1] >> 2)
+        self.ECN  = (ulist[1] & 0x03)
         self.flags = Flags(
-            DF = ((ulist[3] >> 14) & 0x01),
-            MF = ((ulist[3] >> 13) & 0x01),
+            DF = ((ulist[4] >> 14) & 0x01),
+            MF = ((ulist[4] >> 13) & 0x01),
         )
         pktt.pkt.ip = self
 
         if count > 20:
             # Save IP options
             osize = count - 20
-            self.options = pktt.rawdata(osize)
+            self.options = unpack.read(osize)
 
         if self.protocol == 6:
             # Decode TCP
             TCP(pktt)
+        else:
+            self.data = unpack.getbytes()
 
     def __str__(self):
         """String representation of object

@@ -22,7 +22,7 @@ from packet.application.rpc import RPC
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -85,7 +85,8 @@ class TCP(BaseObj):
                access to the parent layers.
         """
         # Decode the TCP layer header
-        ulist = pktt.unpack(20, 'HHIIBBHHH')
+        unpack = pktt.unpack
+        ulist = unpack.unpack(20, 'HHIIBBHHH')
         temp = ulist[4] >> 4
         count = 4*temp
         self.src_port    = ulist[0]
@@ -144,10 +145,10 @@ class TCP(BaseObj):
 
         if count > 20:
             osize = count - 20
-            self.options = pktt.rawdata(osize)
+            self.options = unpack.read(osize)
 
         # Save length of TCP segment
-        self.length = len(pktt.data)
+        self.length = unpack.size()
 
         if seq < stream['last_seq']:
             # This is a re-transmission, do not process
@@ -190,21 +191,24 @@ class TCP(BaseObj):
         """Decode TCP payload."""
         rpc = None
         pkt = pktt.pkt
+        unpack = pktt.unpack
         if stream['frag_off'] > 0 and len(stream['msfrag']) == 0:
             # This RPC packet lies within previous TCP packet,
             # Re-position the offset of the data
-            pktt.data = pktt.data[stream['frag_off']:]
+            unpack.seek(unpack.tell() + stream['frag_off'])
 
         # Get the total size
-        save_data = pktt.data
-        size = len(pktt.data)
+        sid = unpack.save_state()
+        size = unpack.size()
+        nonvalid = bool(size <= 20 and unpack.getbytes() == '\x00' * size)
 
         # Try decoding the RPC header before using the msfrag data
         # to re-sync the stream
         if len(stream['msfrag']) > 0:
             rpc = RPC(pktt, proto=6)
             if not rpc:
-                pktt.data = save_data
+                unpack.restore_state(sid)
+                sid = unpack.save_state()
 
         if rpc or (size == 0 and len(stream['msfrag']) > 0 and self.flags_raw != 0x10):
             # There has been some data lost in the capture,
@@ -217,14 +221,14 @@ class TCP(BaseObj):
         nseg = self.seq - stream['last_seq']
 
         # Make sure this segment has valid data
-        if nseg != len(stream['msfrag']) and \
-           size <= 20 and save_data == '\x00' * size:
+        if nseg != len(stream['msfrag']) and nonvalid:
             return
 
         if not rpc:
-            # Concatenate previous fragment
-            pktt.data = stream['msfrag'] + pktt.data
-            ldata = len(pktt.data) - 4
+            if len(stream['msfrag']):
+                # Concatenate previous fragment
+                unpack.insert(stream['msfrag'])
+            ldata = unpack.size() - 4
 
             # Get RPC header
             rpc = RPC(pktt, proto=6)
@@ -239,7 +243,8 @@ class TCP(BaseObj):
         truncbytes = pkt.record.length_orig - pkt.record.length_inc
         if truncbytes == 0 and ldata < rpcsize:
             # An RPC fragment is missing to decode RPC payload
-            stream['msfrag'] += save_data
+            unpack.restore_state(sid)
+            stream['msfrag'] += unpack.getbytes()
         else:
             if len(stream['msfrag']) > 0 or ldata == rpcsize:
                 stream['frag_off'] = 0
@@ -255,15 +260,15 @@ class TCP(BaseObj):
             nfs = rpc.decode_nfs()
             if nfs:
                 pkt.nfs = nfs
-            rpcbytes = ldata - len(pktt.data)
+            rpcbytes = ldata - unpack.size()
             if not nfs and rpcbytes != rpcsize:
                 pass
-            elif pktt.data:
+            elif unpack.size():
                 # Save the offset of next RPC packet within this TCP packet
                 # Data offset is cumulative
-                stream['frag_off'] += size - len(pktt.data)
-                save_data = pktt.data
-                ldata = len(pktt.data) - 4
+                stream['frag_off'] += size - unpack.size()
+                sid = unpack.save_state()
+                ldata = unpack.size() - 4
                 try:
                     rpc_header = RPC(pktt, proto=6, state=False)
                 except Exception:
@@ -271,7 +276,8 @@ class TCP(BaseObj):
                 if not rpc_header or ldata < rpc_header.fragment_hdr.size:
                     # Part of next RPC packet is within this TCP packet
                     # Save the multi-span fragment data
-                    stream['msfrag'] += save_data
+                    unpack.restore_state(sid)
+                    stream['msfrag'] += unpack.getbytes()
                 else:
                     # Next RPC packet is entirely within this TCP packet
                     # Re-position the file pointer to the current offset
