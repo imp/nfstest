@@ -111,7 +111,7 @@ class RPC(GSS):
            [data = string] # raw data of payload if unable to decode
        )
     """
-    def __init__(self, pktt, proto):
+    def __init__(self, pktt, proto, state=True):
         """Constructor
 
            Initialize object's private data.
@@ -121,10 +121,13 @@ class RPC(GSS):
                access to the parent layers.
            proto:
                Transport layer protocol.
+           state:
+               Save call state.
         """
         self._rpc = False
         self._pktt = pktt
         self._proto = proto
+        self._state = state
 
         try:
             self._rpc_header()
@@ -214,6 +217,10 @@ class RPC(GSS):
             return
 
         self._rpc = True
+        if not self._state:
+            # Do not save state
+            return
+
         xid = self.xid
         if self.type == CALL:
             # Save call packet in the xid map

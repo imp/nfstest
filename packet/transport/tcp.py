@@ -265,7 +265,7 @@ class TCP(BaseObj):
                 save_data = pktt.data
                 ldata = len(pktt.data) - 4
                 try:
-                    rpc_header = RPC(pktt, proto=6)
+                    rpc_header = RPC(pktt, proto=6, state=False)
                 except Exception:
                     rpc_header = None
                 if not rpc_header or ldata < rpc_header.fragment_hdr.size:
