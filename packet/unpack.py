@@ -65,6 +65,12 @@ class Unpack(object):
            #   x = Unpack(data + x.getbytes())
            x.insert(data)
 
+           # Save state
+           sid = x.save_state()
+
+           # Restore state
+           x.restore_state(sid)
+
            # Unpack an 'unsigned short' (2 bytes)
            short_int = x.unpack(2, 'H')[0]
 
@@ -129,6 +135,7 @@ class Unpack(object):
         """
         self._offset = 0
         self._data = data
+        self._state = []
 
     def _get_ltype(self, ltype):
         """Get length of element"""
@@ -161,8 +168,29 @@ class Unpack(object):
 
     def insert(self, data):
         """Insert data to the beginning of the current working buffer."""
+        if len(self._state):
+            # Save working buffer in the saved state since the buffer
+            # will be overwritten
+            state = self._state[-1]
+            if len(state) == 2:
+                state.append(self._data)
         self._data = data + self._data[self._offset:]
         self._offset = 0
+
+    def save_state(self):
+        """Save state and return the state id"""
+        sid = len(self._state)
+        self._state.append([sid, self._offset])
+        return sid
+
+    def restore_state(self, sid):
+        """Restore state given by the state id"""
+        max = len(self._state)
+        while sid < len(self._state):
+            state = self._state.pop()
+            self._offset = state[1]
+            if len(state) == 3:
+                self._data = state[2]
 
     def getbytes(self, offset=None):
         """Get the number of bytes given from the working buffer.
