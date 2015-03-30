@@ -50,7 +50,7 @@ from packet.link.ethernet import ETHERNET
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -246,9 +246,10 @@ class Pktt(BaseObj, Unpack):
         # Decode record header
         record = Record(self, data)
 
-        # Get the data
-        self.data = self._read(record.length_inc)
-        if len(self.data) < record.length_inc:
+        # Get record data and create Unpack object
+        self.unpack = Unpack(self._read(record.length_inc))
+        if self.unpack.size() < record.length_inc:
+            # Record has been truncated, stop iteration
             raise StopIteration
 
         if self.header.link_type == 1:
@@ -256,7 +257,7 @@ class Pktt(BaseObj, Unpack):
             ETHERNET(self)
         else:
             # Unknown link layer
-            record.data = self.data
+            record.data = self.unpack.getbytes()
 
         # Increment packet index
         self.index += 1
