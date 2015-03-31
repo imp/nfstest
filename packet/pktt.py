@@ -96,7 +96,8 @@ class Pktt(BaseObj, Unpack):
            packet is retrieved.
 
            tracefile:
-               Name of tcpdump trace file (little or big endian format)
+               Name of tcpdump trace file or a list of trace file names
+               (little or big endian format)
            live:
                If set to True, methods will not return if encountered <EOF>,
                they will keep on trying until more data is available in the
@@ -113,10 +114,15 @@ class Pktt(BaseObj, Unpack):
         self.boffset = 0      # File offset of current packet
         self.ioffset = 0      # File offset of first packet
         self.index   = 0      # Current packet index
-        self.mindex  = 0      # Maximum packet index processed so far
+        self.mindex  = 0      # Maximum packet index for current trace file
         self.findex  = 0      # Current tcpdump file index (used with self.live)
         self.fh      = None   # Current file handle
+        self.eof     = False  # End of file marker for current packet trace
+        self.serial  = False  # Processing trace files serially
         self.pkt     = None   # Current packet
+        self.pkt_call  = None # The current packet call if self.pkt is a reply
+        self.pktt_list = []   # List of Pktt objects created
+        self.tfiles    = []   # List of packet trace files
 
         # TCP stream map: to keep track of the different TCP streams within
         # the trace file -- used to deal with RPC packets spanning multiple
@@ -126,8 +132,17 @@ class Pktt(BaseObj, Unpack):
         # RPC xid map: to keep track of packet calls
         self._rpc_xid_map = {}
 
-        # The current packet call if self.pkt is a reply
-        self.pkt_call = None
+        # Process tfile argument
+        if isinstance(tfile, list):
+            # The argument tfile is given as a list of packet trace files
+            self.tfiles = tfile
+            if len(self.tfiles) == 1:
+                # Only one file is given
+                self.tfile = self.tfiles[0]
+            else:
+                # Create all packet trace objects
+                for tfile in self.tfiles:
+                    self.pktt_list.append(Pktt(tfile))
 
     def __del__(self):
         """Destructor
@@ -233,12 +248,74 @@ class Pktt(BaseObj, Unpack):
         # Initialize next packet
         self.pkt = Pkt()
 
+        if len(self.pktt_list) > 1:
+            # Dealing with multiple trace files
+            minsecs  = None
+            pktt_obj = None
+            for obj in self.pktt_list:
+                if obj.pkt is None:
+                    # Get first packet for this packet trace object
+                    try:
+                        obj.next()
+                    except StopIteration:
+                        obj.mindex = self.index
+                if obj.eof:
+                    continue
+                if minsecs is None or obj.pkt.record.secs < minsecs:
+                    minsecs = obj.pkt.record.secs
+                    pktt_obj = obj
+            if pktt_obj is None:
+                # All packet trace files have been processed
+                raise StopIteration
+            elif len(self._tcp_stream_map):
+                # This packet trace file should be processed serially
+                # Have all state transferred to next packet object
+                pktt_obj.rewind()
+                pktt_obj._tcp_stream_map = self._tcp_stream_map
+                pktt_obj._rpc_xid_map    = self._rpc_xid_map
+                self._tcp_stream_map = {}
+                self._rpc_xid_map    = {}
+                pktt_obj.next()
+
+            # Overwrite attributes seen by the caller with the attributes
+            # from the current packet trace object
+            self.pkt = pktt_obj.pkt
+            self.pkt_call = pktt_obj.pkt_call
+            self.tfile = pktt_obj.tfile
+            self.pkt.record.index = self.index  # Use a cumulative index
+
+            try:
+                # Get next packet for this packet trace object
+                pktt_obj.next()
+            except StopIteration:
+                # Set maximum packet index for this packet trace object to
+                # be used by rewind to select the proper packet trace object
+                pktt_obj.mindex = self.index
+                # Check if objects should be serially processed
+                pktt_obj.serial = False
+                for obj in self.pktt_list:
+                    if not obj.eof:
+                        if obj.index > 1:
+                            pktt_obj.serial = False
+                            break
+                        elif obj.index == 1:
+                            pktt_obj.serial = True
+                if pktt_obj.serial:
+                    # Save current state
+                    self._tcp_stream_map = pktt_obj._tcp_stream_map
+                    self._rpc_xid_map    = pktt_obj._rpc_xid_map
+
+            # Increment cumulative packet index
+            self.index += 1
+            return self.pkt
+
         # Save file offset for this packet
         self.boffset = self.offset
 
         # Get record header
         data = self._read(16)
         if len(data) < 16:
+            self.eof = True
             raise StopIteration
         # Decode record header
         record = Record(self, data)
@@ -258,8 +335,6 @@ class Pktt(BaseObj, Unpack):
 
         # Increment packet index
         self.index += 1
-        if self.index > self.mindex:
-            self.mindex = self.index
 
         return self.pkt
 
@@ -271,15 +346,30 @@ class Pktt(BaseObj, Unpack):
         """
         self.dprint('PKT1', ">>> rewind(%d)" % index)
         if index >= 0 and index < self.index:
-            # Reset the current packet index and offset to the first packet
-            self.offset = self.ioffset
-            self.index = 0
+            if len(self.pktt_list) > 1:
+                # Dealing with multiple trace files
+                self.index = 0
+                for obj in self.pktt_list:
+                    if not obj.eof or index <= obj.mindex:
+                        obj.rewind()
+                        try:
+                            obj.next()
+                        except StopIteration:
+                            pass
+                    elif obj.serial and index > obj.mindex:
+                        self.index = obj.mindex + 1
+            else:
+                # Reset the current packet index and offset to the first packet
+                self.offset = self.ioffset
+                self.index  = 0
+                self.eof    = False
 
-            # Position the file pointer to the offset of the first packet
-            self._getfh().seek(self.offset)
+                # Position the file pointer to the offset of the first packet
+                self._getfh().seek(self.offset)
 
-            # Clear stream fragments
-            self._tcp_stream_map = {}
+                # Clear state
+                self._tcp_stream_map = {}
+                self._rpc_xid_map    = {}
 
             # Move to the packet before the specified by the index so the
             # next packet fetched will be the one given by index
@@ -289,6 +379,7 @@ class Pktt(BaseObj, Unpack):
                 except:
                     break
 
+            # Rewind succeeded
             return True
         return False
 
