@@ -50,7 +50,7 @@ from packet.link.ethernet import ETHERNET
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -109,15 +109,14 @@ class Pktt(BaseObj, Unpack):
         self.tfile   = tfile  # Current trace file name
         self.bfile   = tfile  # Base trace file name
         self.live    = live   # Set to True if dealing with a live tcpdump file
-        self.state   = state  # Set to False so state is not kept,
-                              # use for large trace files to save some memory
         self.offset  = 0      # Current file offset
+        self.boffset = 0      # File offset of current packet
+        self.ioffset = 0      # File offset of first packet
         self.index   = 0      # Current packet index
         self.mindex  = 0      # Maximum packet index processed so far
         self.findex  = 0      # Current tcpdump file index (used with self.live)
         self.fh      = None   # Current file handle
         self.pkt     = None   # Current packet
-        self.pkt_map = []     # Packet map: pkt_map[self.index] = self.offset
 
         # TCP stream map: to keep track of the different TCP streams within
         # the trace file -- used to deal with RPC packets spanning multiple
@@ -180,7 +179,7 @@ class Pktt(BaseObj, Unpack):
         except:
             pass
 
-        if index < self.index and index < len(self.pkt_map):
+        if index < self.index:
             # Reset the current packet index and offset
             # The index is less than the current packet offset so position
             # the file pointer to the offset of the packet given by index
@@ -235,9 +234,7 @@ class Pktt(BaseObj, Unpack):
         self.pkt = Pkt()
 
         # Save file offset for this packet
-        self.b_offset = self.offset
-        if self.state and self.index >= len(self.pkt_map):
-            self.pkt_map.append(self.offset)
+        self.boffset = self.offset
 
         # Get record header
         data = self._read(16)
@@ -273,20 +270,16 @@ class Pktt(BaseObj, Unpack):
            of packets processed so far.
         """
         self.dprint('PKT1', ">>> rewind(%d)" % index)
-        if index >= 0 and index < len(self.pkt_map):
+        if index >= 0 and index < self.index:
             # Reset the current packet index and offset to the first packet
-            self.offset = self.pkt_map[0]
+            self.offset = self.ioffset
             self.index = 0
 
             # Position the file pointer to the offset of the first packet
             self._getfh().seek(self.offset)
 
             # Clear stream fragments
-            for stream_key in self._tcp_stream_map:
-                stream = self._tcp_stream_map[stream_key]
-                stream['last_seq'] = 0
-                stream['frag_off'] = 0
-                stream['msfrag'] = ''
+            self._tcp_stream_map = {}
 
             # Move to the packet before the specified by the index so the
             # next packet fetched will be the one given by index
@@ -343,9 +336,9 @@ class Pktt(BaseObj, Unpack):
             self.header = Header(head_keys, struct.unpack(self.header_fmt, self._read(20)))
 
             # Initialize packet number
-            self.index = 0
-            self.pkt_map = [self.offset]
-            self.tstart = None
+            self.index   = 0
+            self.tstart  = None
+            self.ioffset = self.offset
 
         return self.fh
 

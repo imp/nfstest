@@ -281,7 +281,7 @@ class TCP(BaseObj):
                 else:
                     # Next RPC packet is entirely within this TCP packet
                     # Re-position the file pointer to the current offset
-                    pktt.offset = pktt.b_offset
+                    pktt.offset = pktt.boffset
                     pktt._getfh().seek(pktt.offset)
             else:
                 stream['frag_off'] = 0
