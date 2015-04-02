@@ -37,7 +37,21 @@ _TCP_map = {
     0x80:'CWR',
 }
 
-class Flags(BaseObj): pass
+class Flags(BaseObj):
+    """Flags object"""
+    # Class attributes
+    _attrlist = ("FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR")
+
+    def __init__(self, data):
+        """Constructor which takes a single byte as input"""
+        self.FIN = (data & 0x01)
+        self.SYN = ((data >> 1) & 0x01)
+        self.RST = ((data >> 2) & 0x01)
+        self.PSH = ((data >> 3) & 0x01)
+        self.ACK = ((data >> 4) & 0x01)
+        self.URG = ((data >> 5) & 0x01)
+        self.ECE = ((data >> 6) & 0x01)
+        self.CWR = ((data >> 7) & 0x01)
 
 class TCP(BaseObj):
     """TCP object
@@ -50,31 +64,41 @@ class TCP(BaseObj):
        Object definition:
 
        TCP(
-           src_port    = int,
-           dst_port    = int,
-           seq_number  = int,
-           seq         = int, # relative sequence number
-           ack_number  = int,
-           hl          = int,
-           header_size = int,
-           window_size = int,
-           checksum    = int,
-           urgent_ptr  = int,
-           flags_raw   = int, # raw flags
-           flags = Flags(
-               FIN = int,
-               SYN = int,
-               RST = int,
-               PSH = int,
-               ACK = int,
-               URG = int,
-               ECE = int,
-               CWR = int,
+           src_port    = int, # Source port
+           dst_port    = int, # Destination port
+           seq_number  = int, # Sequence number
+           ack_number  = int, # Acknowledgment number
+           hl          = int, # Data offset or header length (32bit words)
+           header_size = int, # Data offset or header length in bytes
+           flags_raw   = int, # Raw flags
+           flags = Flags(     # Individual flags:
+               FIN = int,     #   No more data from sender
+               SYN = int,     #   Synchronize sequence numbers
+               RST = int,     #   Synchronize sequence numbers
+               PSH = int,     #   Push function. Asks to push the buffered
+                              #     data to the receiving application
+               ACK = int,     #   Acknowledgment field is significant
+               URG = int,     #   Urgent pointer field is significant
+               ECE = int,     #   ECN-Echo has a dual role:
+                              #     SYN=1, the TCP peer is ECN capable.
+                              #     SYN=0, packet with Congestion Experienced
+                              #     flag in IP header set is received during
+                              #     normal transmission
+               CWR = int,     #   Congestion Window Reduced
            ),
-           options = string, # raw data of TCP options if available
-           data = string,    # raw data of payload if unable to decode
+           window_size = int, # Window size
+           checksum    = int, # Checksum
+           urgent_ptr  = int, # Urgent pointer
+           seq         = int, # Relative sequence number
+           options = string,  # Raw data of TCP options if available
+           data = string,     # Raw data of payload if unable to decode
        )
     """
+    # Class attributes
+    _attrlist = ("src_port", "dst_port", "seq_number", "ack_number", "hl",
+                 "header_size", "flags_raw", "flags", "window_size",
+                 "checksum", "urgent_ptr", "options", "data")
+
     def __init__(self, pktt):
         """Constructor
 
@@ -87,28 +111,18 @@ class TCP(BaseObj):
         # Decode the TCP layer header
         unpack = pktt.unpack
         ulist = unpack.unpack(20, 'HHIIBBHHH')
-        temp = ulist[4] >> 4
-        count = 4*temp
         self.src_port    = ulist[0]
         self.dst_port    = ulist[1]
         self.seq_number  = ulist[2]
         self.ack_number  = ulist[3]
-        self.hl          = temp
-        self.header_size = count
+        self.hl          = ulist[4] >> 4
+        self.header_size = 4*self.hl
+        self.flags_raw   = (ulist[5] & 0xFF)
+        self.flags       = Flags(ulist[5])
         self.window_size = ulist[6]
         self.checksum    = ulist[7]
         self.urgent_ptr  = ulist[8]
-        self.flags_raw   = (ulist[5] & 0xFF)
-        self.flags = Flags(
-            FIN = (ulist[5] & 0x01),
-            SYN = ((ulist[5] >> 1) & 0x01),
-            RST = ((ulist[5] >> 2) & 0x01),
-            PSH = ((ulist[5] >> 3) & 0x01),
-            ACK = ((ulist[5] >> 4) & 0x01),
-            URG = ((ulist[5] >> 5) & 0x01),
-            ECE = ((ulist[5] >> 6) & 0x01),
-            CWR = ((ulist[5] >> 7) & 0x01),
-        )
+
         pktt.pkt.tcp = self
 
         # Stream identifier
@@ -143,8 +157,8 @@ class TCP(BaseObj):
             seq += 4294967296
         self.seq = seq
 
-        if count > 20:
-            osize = count - 20
+        if self.header_size > 20:
+            osize = self.header_size - 20
             self.options = unpack.read(osize)
 
         # Save length of TCP segment
