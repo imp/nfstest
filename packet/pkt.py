@@ -65,6 +65,12 @@ class Pkt(BaseObj):
            if x == 'nfs':
                print x.nfs
     """
+    _attrlist = tuple(_PKT_layers)
+
+    # Do not use BaseObj constructor to have a little bit of
+    # performance improvement
+    def __init__(self): pass
+
     def __eq__(self, other):
         """Comparison method used to determine if object has a given layer"""
         if type(other) is str:
