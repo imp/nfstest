@@ -27,23 +27,24 @@ __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 _TCP_map = {
-    0x01:'FIN',
-    0x02:'SYN',
-    0x04:'RST',
-    0x08:'PSH',
-    0x10:'ACK',
-    0x20:'URG',
-    0x40:'ECE',
-    0x80:'CWR',
+    0x001:'FIN',
+    0x002:'SYN',
+    0x004:'RST',
+    0x008:'PSH',
+    0x010:'ACK',
+    0x020:'URG',
+    0x040:'ECE',
+    0x080:'CWR',
+    0x100:'NS',
 }
 
 class Flags(BaseObj):
     """Flags object"""
     # Class attributes
-    _attrlist = ("FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR")
+    _attrlist = ("FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR", "NS")
 
     def __init__(self, data):
-        """Constructor which takes a single byte as input"""
+        """Constructor which takes a short integer as input"""
         self.FIN = (data & 0x01)
         self.SYN = ((data >> 1) & 0x01)
         self.RST = ((data >> 2) & 0x01)
@@ -52,6 +53,7 @@ class Flags(BaseObj):
         self.URG = ((data >> 5) & 0x01)
         self.ECE = ((data >> 6) & 0x01)
         self.CWR = ((data >> 7) & 0x01)
+        self.NS  = ((data >> 8) & 0x01)
 
 class TCP(BaseObj):
     """TCP object
@@ -85,6 +87,7 @@ class TCP(BaseObj):
                               #     flag in IP header set is received during
                               #     normal transmission
                CWR = int,     #   Congestion Window Reduced
+               NS  = int,     #   ECN-nonce concealment protection
            ),
            window_size = int, # Window size
            checksum    = int, # Checksum
@@ -110,18 +113,18 @@ class TCP(BaseObj):
         """
         # Decode the TCP layer header
         unpack = pktt.unpack
-        ulist = unpack.unpack(20, 'HHIIBBHHH')
+        ulist = unpack.unpack(20, 'HHIIHHHH')
         self.src_port    = ulist[0]
         self.dst_port    = ulist[1]
         self.seq_number  = ulist[2]
         self.ack_number  = ulist[3]
-        self.hl          = ulist[4] >> 4
+        self.hl          = ulist[4] >> 12
         self.header_size = 4*self.hl
-        self.flags_raw   = (ulist[5] & 0xFF)
-        self.flags       = Flags(ulist[5])
-        self.window_size = ulist[6]
-        self.checksum    = ulist[7]
-        self.urgent_ptr  = ulist[8]
+        self.flags_raw   = (ulist[4] & 0x1FF)
+        self.flags       = Flags(self.flags_raw)
+        self.window_size = ulist[5]
+        self.checksum    = ulist[6]
+        self.urgent_ptr  = ulist[7]
 
         pktt.pkt.tcp = self
 
