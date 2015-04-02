@@ -23,15 +23,22 @@ from packet.transport.tcp import TCP
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 # Name of different protocols
 _IP_map = {1:'ICMP', 2:'IGMP', 6:'TCP', 17:'UDP' }
 
-class TOS(BaseObj): pass
-class Flags(BaseObj): pass
+class Flags(BaseObj):
+    """Flags object"""
+    # Class attributes
+    _attrlist = ("DF", "MF")
+
+    def __init__(self, data):
+        """Constructor which takes a single byte as input"""
+        self.DF = ((data >> 14) & 0x01) # Don't Fragment
+        self.MF = ((data >> 13) & 0x01) # More Fragments
 
 class IPv4(BaseObj):
     """IPv4 object
@@ -45,34 +52,32 @@ class IPv4(BaseObj):
 
        IPv4(
            version         = int,
-           IHL             = int,
-           header_size     = int,
-           total_size      = int,
-           id              = int,
-           fragment_offset = int,
-           TTL             = int,
-           protocol        = int,
-           checksum        = int,
+           IHL             = int, # Internet Header Length (in 32bit words)
+           header_size     = int, # IHL in actual bytes
+           DSCP            = int, # Differentiated Services Code Point
+           ECN             = int, # Explicit Congestion Notification
+           total_size      = int, # Total length
+           id              = int, # Identification
+           flags = Flags(         # Flags:
+               DF = int,          #   Don't Fragment
+               MF = int,          #   More Fragments
+           )
+           fragment_offset = int, # Fragment offset (in 8-byte blocks)
+           TTL             = int, # Time to Live
+           protocol        = int, # Protocol of next layer (RFC790)
+           checksum        = int, # Header checksum
            src             = "%d.%d.%d.%d", # source IP address
            dst             = "%d.%d.%d.%d", # destination IP address
-           TOS = TOS(
-               precedence    = int,
-               delay         = int,
-               throughput    = int,
-               reliability   = int,
-               monetary_cost = int,
-           ),
-           DSCP = int,
-           ECN  = int,
-           flags = Flags(
-               DF = int,
-               MF = int,
-           )
            options = string, # IP options if available
            data = string,    # Raw data of payload if protocol
                              # is not supported
        )
     """
+    # Class attributes
+    _attrlist = ("version", "IHL", "header_size", "DSCP", "ECN", "total_size",
+                 "id", "flags", "fragment_offset", "TTL", "protocol",
+                 "checksum", "src", "dst", "options", "data")
+
     def __init__(self, pktt):
         """Constructor
 
@@ -85,36 +90,26 @@ class IPv4(BaseObj):
         # Decode IP header
         unpack = pktt.unpack
         ulist = unpack.unpack(20, 'BBHHHBBH4B4B')
-        count = 4*(ulist[0] & 0x0F)
         self.version         = (ulist[0] >> 4)
         self.IHL             = (ulist[0] & 0x0F)
-        self.header_size     = count
+        self.header_size     = 4*self.IHL
+        self.DSCP            = (ulist[1] >> 2)
+        self.ECN             = (ulist[1] & 0x03)
         self.total_size      = ulist[2]
         self.id              = ulist[3]
+        self.flags           = Flags(ulist[4])
         self.fragment_offset = (ulist[4] & 0x1FFF)
         self.TTL             = ulist[5]
         self.protocol        = ulist[6]
         self.checksum        = ulist[7]
         self.src             = "%d.%d.%d.%d" % ulist[8:12]
         self.dst             = "%d.%d.%d.%d" % ulist[12:]
-        self.TOS = TOS(
-            precedence    = (ulist[1] >> 5),
-            delay         = ((ulist[1] >> 4) & 0x01),
-            throughput    = ((ulist[1] >> 3) & 0x01),
-            reliability   = ((ulist[1] >> 2) & 0x01),
-            monetary_cost = ((ulist[1] >> 1) & 0x01),
-        )
-        self.DSCP = (ulist[1] >> 2)
-        self.ECN  = (ulist[1] & 0x03)
-        self.flags = Flags(
-            DF = ((ulist[4] >> 14) & 0x01),
-            MF = ((ulist[4] >> 13) & 0x01),
-        )
+
         pktt.pkt.ip = self
 
-        if count > 20:
+        if self.header_size > 20:
             # Save IP options
-            osize = count - 20
+            osize = self.header_size - 20
             self.options = unpack.read(osize)
 
         if self.protocol == 6:
