@@ -76,6 +76,9 @@ class BaseObj(FormatStr):
            # All of the above will create an object having two attributes:
            x.a = 1 and x.b = 2
 
+           # Set the comparison attribute so x == x.a is True
+           x.set_eqattr("a")
+
            # Set verbose level of object's string representation
            x.debug_repr(level)
 
@@ -101,6 +104,9 @@ class BaseObj(FormatStr):
            # debug level mask
            x.dprint("OPTS", "This is an OPTS debug message")
     """
+    # Class attributes
+    _eqattr = None # Comparison attribute
+
     def __init__(self, *kwts, **kwds):
         """Constructor
 
@@ -120,6 +126,23 @@ class BaseObj(FormatStr):
                     keys = None
         # Process named arguments: x = BaseObj(a=1, b=2)
         self.__dict__.update(kwds)
+
+    def __eq__(self, other):
+        """Comparison method: this object is treated like the attribute
+           defined by set_eqattr()
+        """
+        if self._eqattr is None:
+            # Compare object
+            return id(other) == id(self)
+        else:
+            # Compare defined attribute
+            return other == getattr(self, self._eqattr)
+
+    def __ne__(self, other):
+        """Comparison method: this object is treated like the attribute
+           defined by set_eqattr()
+        """
+        return not self.__eq__(other)
 
     def __repr__(self):
         """String representation of object
@@ -151,6 +174,19 @@ class BaseObj(FormatStr):
         out += ")"
         return out
     __str__ = __repr__
+
+    def set_eqattr(self, attr):
+        """Set the comparison attribute
+
+           attr:
+               Attribute to use for object comparison
+
+           Examples:
+               x = BaseObj(a=1, b=2)
+               x.set_eqattr("a")
+               x == 1 will return True, the same as x.a == 1
+        """
+        self._eqattr = attr
 
     @staticmethod
     def debug_repr(level=None):
