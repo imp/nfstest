@@ -76,6 +76,12 @@ class BaseObj(FormatStr):
            # All of the above will create an object having two attributes:
            x.a = 1 and x.b = 2
 
+           # Add attribute name, this will be the only attribute to be displayed
+           x.set_attrlist("a")
+
+           # Add list of attribute names to be displayed in that order
+           x.set_attrlist(["a", "b"])
+
            # Set the comparison attribute so x == x.a is True
            x.set_eqattr("a")
 
@@ -105,7 +111,8 @@ class BaseObj(FormatStr):
            x.dprint("OPTS", "This is an OPTS debug message")
     """
     # Class attributes
-    _eqattr = None # Comparison attribute
+    _attrlist = None # List of attributes to display in order
+    _eqattr   = None # Comparison attribute
 
     def __init__(self, *kwts, **kwds):
         """Constructor
@@ -160,20 +167,35 @@ class BaseObj(FormatStr):
         # Representation of object with proper indentation
         indent = ' ' * 4
         out = self.__class__.__name__ + "(\n"
-        itemlist = getattr(self, '_itemlist', None)
-        if itemlist is None:
-            itemlist = sorted(self.__dict__.iterkeys())
-        for key in itemlist:
+        if self._attrlist is None:
+            attrlist = sorted(self.__dict__.keys())
+        else:
+            attrlist = self._attrlist
+        for key in attrlist:
             if key[0] != '_':
-                val = self.__dict__.get(key, None)
+                val = getattr(self, key, None)
                 if val != None:
                     value = pformat(val)
                     out += "    %s = %s,\n" % (key, value.replace("\n", "\n"+indent))
-                else:
-                    out += "    %s = None,\n" % key
         out += ")"
         return out
     __str__ = __repr__
+
+    def set_attrlist(self, attr):
+        """Add list of attribute names in object to display by str() or repr()
+
+           attr:
+               Name or list of names to add to the list of attribute names
+               to display
+        """
+        if self._attrlist is None:
+            self._attrlist = []
+        if isinstance(attr, list):
+            # Add given list of items
+            self._attrlist += attr
+        else:
+            # Add a single item
+            self._attrlist.append(attr)
 
     def set_eqattr(self, attr):
         """Set the comparison attribute
