@@ -17,7 +17,7 @@ Packet trace module
 The Packet trace module is a python module that takes a trace file created
 by tcpdump and unpacks the contents of each packet. You can decode one packet
 at a time, or do a search for specific packets. The main difference between
-this modules and other tools used to decode trace files is that you can use
+these modules and other tools used to decode trace files is that you can use
 this module to completely automate your tests.
 
 How does it work? It opens the trace file and reads one record at a time
@@ -73,7 +73,19 @@ _match_func_map = {
     'NFS':      'self.match_nfs',
 }
 
-class Header(BaseObj): pass
+class Header(BaseObj):
+    # Class attributes
+    _attrlist = ("major", "minor", "zone_offset", "accuracy",
+                 "dump_length", "link_type")
+
+    def __init__(self, pktt):
+        ulist = struct.unpack(pktt.header_fmt, pktt._read(20))
+        self.major       = ulist[0]
+        self.minor       = ulist[1]
+        self.zone_offset = ulist[2]
+        self.accuracy    = ulist[3]
+        self.dump_length = ulist[4]
+        self.link_type   = ulist[5]
 
 class Pktt(BaseObj, Unpack):
     """Packet trace object
@@ -423,8 +435,7 @@ class Pktt(BaseObj, Unpack):
                     self.fh = gzip.GzipFile(fileobj=self.fh)
 
             # Get header information
-            head_keys = ('major', 'minor', 'zone_offset', 'accuracy', 'dump_length', 'link_type')
-            self.header = Header(head_keys, struct.unpack(self.header_fmt, self._read(20)))
+            self.header = Header(self)
 
             # Initialize packet number
             self.index   = 0
