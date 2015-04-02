@@ -48,6 +48,10 @@ class Record(BaseObj):
            rsecs       = float, # Seconds relative to first packet
        )
     """
+    # Class attributes
+    _attrlist = ("index", "seconds", "usecs", "length_inc", "length_orig",
+                 "secs", "rsecs")
+
     def __init__(self, pktt, data):
         """Constructor
 
