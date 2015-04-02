@@ -14,7 +14,7 @@
 """
 Base object
 
-Base class so objects will inherit the methods which provide the string
+Base class so objects will inherit the methods providing the string
 representation of the object and methods to change the verbosity of such
 string representation. It also includes a simple debug printing and logging
 mechanism including methods to change the debug verbosity level and methods
@@ -57,27 +57,56 @@ def _init_debug():
 _init_debug()
 
 class BaseObj(FormatStr):
-    """Base class so objects will inherit the methods which provide the string
+    """Base class so objects will inherit the methods providing the string
        representation of the object and a simple debug printing and logging
        mechanism.
+
+       Usage:
+           from baseobj import BaseObj
+
+           # Named arguments
+           x = BaseObj(a=1, b=2)
+
+           # Dictionary argument
+           x = BaseObj({'a':1, 'b':2})
+
+           # Tuple arguments: first for keys and second for the values
+           x = BaseObj(['a', 'b'], [1, 2])
+
+           # All of the above will create an object having two attributes:
+           x.a = 1 and x.b = 2
+
+           # Set verbose level of object's string representation
+           x.debug_repr(level)
+
+           # Set level mask to display all debug messages matching mask
+           x.debug_level(0xFF)
+
+           # Add a debug mapping for mask 0x100
+           x.debug_map(0x100, 'opts', "OPTS: ")
+
+           # Set global indentation to 4 spaces
+           x.dindent(4)
+
+           # Open log file
+           x.open_log(logfile)
+
+           # Close log file
+           x.close_log()
+
+           # Write data to log file
+           x.write_log(data)
+
+           # Print debug message only if OPTS bitmap matches the current
+           # debug level mask
+           x.dprint("OPTS", "This is an OPTS debug message")
     """
     def __init__(self, *kwts, **kwds):
         """Constructor
 
-           Initialize object's private data according to the arguments given
-
-           Examples:
-               # Named arguments
-               x = BaseObj(a=1, b=2)
-
-               # Dictionary argument
-               x = BaseObj({'a':1, 'b':2})
-
-               # Tuple arguments: first for keys and second for the values
-               x = BaseObj(['a', 'b'], [1, 2])
-
-               # All of the above will create an object having two attributes:
-               x.a = 1 and x.b = 2
+           Initialize object's private data according to the arguments given.
+           Arguments can be given as positional, named arguments or a
+           combination of both.
         """
         keys = None
         for item in kwts:
@@ -131,6 +160,16 @@ class BaseObj(FormatStr):
 
            level:
                Level of verbosity to set
+
+           Examples:
+               # Set verbose level to its minimal object representation
+               x.debug_repr(0)
+
+               # Object representation is a bit more verbose
+               x.debug_repr(1)
+
+               # Object representation is a lot more verbose
+               x.debug_repr(2)
         """
         global _rlevel
         ret = _rlevel
