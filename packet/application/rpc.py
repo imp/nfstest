@@ -22,17 +22,34 @@ from gss import GSS
 from rpc_const import *
 import nfstest_config as c
 from baseobj import BaseObj
+from rpc_creds import rpc_credential
 from packet.nfs.nfs4lib import FancyNFS4Unpacker
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.5'
+__version__   = '1.0.6'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
-class Header(BaseObj): pass
-class Credential(BaseObj): pass
-class Prog(BaseObj): pass
+class Header(BaseObj):
+    """Header object"""
+    # Class attributes
+    _attrlist = ("size", "last_fragment")
+
+    def __init__(self, size, last_fragment):
+        """Constructor which takes the size and last fragment as inputs"""
+        self.size          = size
+        self.last_fragment = last_fragment
+
+class Prog(BaseObj):
+    """Prog object"""
+    # Class attributes
+    _attrlist = ("low", "high")
+
+    def __init__(self, unpack):
+        """Constructor which takes the Unpack object as input"""
+        self.low  = unpack.unpack_uint()
+        self.high = unpack.unpack_uint()
 
 class RPC(GSS):
     """RPC object
@@ -111,6 +128,12 @@ class RPC(GSS):
            [data = string] # raw data of payload if unable to decode
        )
     """
+    # Class attributes
+    _attrlist = ("xid", "type", "rpc_version", "program", "version",
+                 "procedure", "reply_status", "credential", "verifier",
+                 "accepted_status", "prog_mismatch", "rejected_status",
+                 "rpc_mismatch", "auth_status")
+
     def __init__(self, pktt, proto, state=True):
         """Constructor
 
@@ -122,7 +145,7 @@ class RPC(GSS):
            proto:
                Transport layer protocol.
            state:
-               Save call state.
+               Save call state. [default: True]
         """
         self._rpc = False
         self._pktt = pktt
@@ -144,20 +167,19 @@ class RPC(GSS):
             while True:
                 # Decode fragment header
                 psize = unpack.unpack_uint()
-                self.fragment_hdr = Header(
-                    size          = (psize & 0x7FFFFFFF) + len(save_data),
-                    last_fragment = psize >> 31,
-                )
-                if self.fragment_hdr.size == 0:
+                size = (psize & 0x7FFFFFFF) + len(save_data)
+                last_fragment = (psize >> 31)
+                if size == 0:
                     return
-                if self.fragment_hdr.last_fragment == 0 and self.fragment_hdr.size < unpack.size():
+                if last_fragment == 0 and size < unpack.size():
                     # Save RPC fragment
-                    save_data += unpack.read(self.fragment_hdr.size)
+                    save_data += unpack.read(size)
                 else:
                     if len(save_data):
                         # Concatenate RPC fragments
                         unpack.insert(save_data)
                     break
+            self.fragment_hdr = Header(size, last_fragment)
         elif self._proto == 17:
             # UDP packet
             pass
@@ -174,35 +196,29 @@ class RPC(GSS):
             self.program     = unpack.unpack_uint()
             self.version     = unpack.unpack_uint()
             self.procedure   = unpack.unpack_uint()
-            self.credential  = self._rpc_credential()
-            if self.credential is None:
+            self.credential  = rpc_credential(unpack)
+            if not self.credential:
                 return
-            self.verifier = self._rpc_credential(True)
-            if self.rpc_version != 2 or (self.credential.flavor in [0,1] and self.verifier is None):
+            self.verifier = rpc_credential(unpack, True)
+            if self.rpc_version != 2 or (self.credential.flavor in [0,1] and not self.verifier):
                 return
         elif self.type == REPLY:
             # RPC reply
             self.reply_status = unpack.unpack_uint()
             if self.reply_status == MSG_ACCEPTED:
-                self.verifier = self._rpc_credential(True)
-                if self.verifier is None:
+                self.verifier = rpc_credential(unpack, True)
+                if not self.verifier:
                     return
                 self.accepted_status = unpack.unpack_uint()
                 if self.accepted_status == PROG_MISMATCH:
-                    self.prog_mismatch = Prog(
-                        low  = unpack.unpack_uint(),
-                        high = unpack.unpack_uint(),
-                    )
+                    self.prog_mismatch = Prog(unpack)
                 elif accept_stat.get(self.accepted_status) is None:
                     # Invalid accept_stat
                     return
             elif self.reply_status == MSG_DENIED:
                 self.rejected_status = unpack.unpack_uint()
                 if self.rejected_status == RPC_MISMATCH:
-                    self.rpc_mismatch = Prog(
-                        low  = unpack.unpack_uint(),
-                        high = unpack.unpack_uint(),
-                    )
+                    self.rpc_mismatch = Prog(unpack)
                 elif self.rejected_status == AUTH_ERROR:
                     self.auth_status = unpack.unpack_uint()
                     if auth_stat.get(self.auth_status) is None:
@@ -396,38 +412,4 @@ class RPC(GSS):
             # Could not decode NFS packet
             self.dprint('PKT3', traceback.format_exc())
             return
-        return ret
-
-    def _rpc_credential(self, verifier=False):
-        """Get the RPC credentials from the working buffer."""
-        pktt = self._pktt
-        unpack = pktt.unpack
-        if unpack.size() < 8:
-            return
-        ret = Credential(flavor = unpack.unpack_uint())
-        # Get size of data without removing bytes from buffer
-        size = struct.unpack('!I', unpack.getbytes()[:4])[0]
-        if unpack.size() < size:
-            return None
-        if ret.flavor == AUTH_SYS:
-            ret.size    = unpack.unpack_uint()
-            ret.stamp   = unpack.unpack_uint()
-            ret.machine = unpack.unpack_opaque(maxcount=255)
-            ret.uid     = unpack.unpack_uint()
-            ret.gid     = unpack.unpack_uint()
-            ret.gids    = unpack.unpack_array(maxcount=16)
-        elif ret.flavor == RPCSEC_GSS:
-            if not verifier:
-                ret.size        = unpack.unpack_uint()
-                ret.gss_version = unpack.unpack_uint()
-                ret.gss_proc    = unpack.unpack_uint()
-                ret.gss_seq_num = unpack.unpack_uint()
-                ret.gss_service = unpack.unpack_uint()
-                ret.gss_context = unpack.unpack_opaque()
-            else:
-                ret.size      = size
-                ret.gss_token = unpack.unpack_opaque()
-        else:
-            ret.size = unpack.unpack_uint()
-            ret.data = unpack.read(size)
         return ret
