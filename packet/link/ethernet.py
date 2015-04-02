@@ -50,6 +50,9 @@ class ETHERNET(BaseObj):
            data  = string,     # raw data of payload if type is not supported
        )
     """
+    # Class attributes
+    _attrlist = ("dst", "src", "type", "data")
+
     def __init__(self, pktt):
         """Constructor
 
