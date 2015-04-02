@@ -15,6 +15,7 @@
 IPv6 module
 
 Decode IP version 6 layer.
+Extension headers are not supported.
 """
 from ipv4 import IPv4
 import nfstest_config as c
@@ -46,11 +47,14 @@ class IPv6(IPv4):
            hop_limit     = int,
            src           = IPv6Addr(),
            dst           = IPv6Addr(),
-           options = string, # IPv6 options if available
-           data = string,    # raw data of payload if protocol
-                             # is not supported
+           data          = string,  # raw data of payload if protocol
+                                    # is not supported
        )
     """
+    # Class attributes
+    _attrlist = ("version", "traffic_class", "flow_label", "total_size",
+                 "protocol", "hop_limit", "src", "dst", "data")
+
     def __init__(self, pktt):
         """Constructor
 
@@ -70,6 +74,7 @@ class IPv6(IPv4):
         self.hop_limit     = ulist[3]
         self.src           = IPv6Addr(ulist[4].encode('hex'))
         self.dst           = IPv6Addr(ulist[5].encode('hex'))
+
         pktt.pkt.ip = self
 
         if self.protocol == 6:
