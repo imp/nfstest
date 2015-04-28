@@ -32,7 +32,7 @@ __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 # Module variables
-_dindent = 0
+_dindent = ""
 _dlevel = 0
 _rlevel = 1
 _logfh = None
@@ -94,7 +94,7 @@ class BaseObj(FormatStr):
            # Add a debug mapping for mask 0x100
            x.debug_map(0x100, 'opts', "OPTS: ")
 
-           # Set global indentation to 4 spaces
+           # Set global indentation to 4 spaces for dprint
            x.dindent(4)
 
            # Open log file
@@ -291,10 +291,12 @@ class BaseObj(FormatStr):
             _debug_prefix[bitmap] = disp
 
     @staticmethod
-    def dindent(indent):
-        """Set global indentation."""
+    def dindent(indent=None):
+        """Set global dprint indentation."""
         global _dindent
-        _dindent = indent
+        if indent is not None:
+            _dindent = " " * indent
+        return _dindent
 
     def open_log(self, logfile):
         """Open log file."""
@@ -328,7 +330,7 @@ class BaseObj(FormatStr):
             # Add display prefix only if msg is not an empty string
             if len(msg):
                 # Find the right display prefix
-                prefix = ' ' * _dindent
+                prefix = _dindent
                 for bitmap in sorted(_debug_prefix):
                     if level & bitmap:
                         prefix += _debug_prefix[bitmap]
