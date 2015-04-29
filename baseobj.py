@@ -27,12 +27,13 @@ from formatstr import FormatStr
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
 # Module variables
 _dindent = ""
+_sindent = "    "
 _dlevel = 0
 _rlevel = 1
 _logfh = None
@@ -97,6 +98,9 @@ class BaseObj(FormatStr):
            # Set global indentation to 4 spaces for dprint
            x.dindent(4)
 
+           # Set global indentation to 4 spaces for displaying objects
+           x.sindent(4)
+
            # Open log file
            x.open_log(logfile)
 
@@ -159,14 +163,30 @@ class BaseObj(FormatStr):
            the representation of the object includes all object attributes
            and their values with proper indentation.
         """
+        return self._str_repr(True)
+
+    def __str__(self):
+        """Informal string representation of object
+
+           The representation depends on the verbose level set by debug_repr().
+           If set to 0 the generic object representation is returned, else
+           the representation of the object includes all object attributes
+           and their values.
+        """
+        return self._str_repr()
+
+    def _str_repr(self, isrepr=False):
+        """String representation of object"""
         global _rlevel
         if _rlevel == 0:
             # Return generic object representation
-            return object.__repr__(self)
+            if isrepr:
+                return super(BaseObj, self).__repr__()
+            else:
+                return super(BaseObj, self).__str__()
 
         # Representation of object with proper indentation
-        indent = ' ' * 4
-        out = self.__class__.__name__ + "(\n"
+        out = []
         if self._attrlist is None:
             attrlist = sorted(self.__dict__.keys())
         else:
@@ -175,11 +195,38 @@ class BaseObj(FormatStr):
             if key[0] != '_':
                 val = getattr(self, key, None)
                 if val != None:
-                    value = pformat(val)
-                    out += "    %s = %s,\n" % (key, value.replace("\n", "\n"+indent))
-        out += ")"
-        return out
-    __str__ = __repr__
+                    if isrepr:
+                        value = pformat(val)
+                        out.append("%s%s = %s,\n" % (_sindent, key, value.replace("\n", "\n"+_sindent)))
+                    else:
+                        out.append("%s=%s" % (key, self._str_value(val)))
+        name = self.__class__.__name__
+        if isrepr:
+            joinstr = ""
+            if len(out) > 0:
+                out.insert(0, "\n")
+        else:
+            joinstr = ", "
+        return "%s(%s)" % (name, joinstr.join(out))
+
+    def _str_value(self, value):
+        """Format value"""
+        if isinstance(value, list) or isinstance(value, tuple):
+            # Display list or tuple
+            out = []
+            for item in value:
+                out.append(self._str_value(item))
+            return '[' + ', '.join(out) + ']'
+        elif isinstance(value, dict):
+            # Display dictionary
+            out = []
+            for key,val in value.iteritems():
+                out.append(str(key) + ": " + self._str_value(val))
+            return '{' + ', '.join(out) + '}'
+        elif type(value) == int or type(value) == long or type(value) == str:
+            return repr(value)
+        else:
+            return str(value)
 
     def set_attrlist(self, attr):
         """Add list of attribute names in object to display by str() or repr()
@@ -297,6 +344,14 @@ class BaseObj(FormatStr):
         if indent is not None:
             _dindent = " " * indent
         return _dindent
+
+    @staticmethod
+    def sindent(indent=None):
+        """Set global object indentation."""
+        global _sindent
+        if indent is not None:
+            _sindent = " " * indent
+        return _sindent
 
     def open_log(self, logfile):
         """Open log file."""
