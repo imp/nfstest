@@ -1,0 +1,1130 @@
+#!/usr/bin/env python
+#===============================================================================
+# Copyright 2013 NetApp, Inc. All Rights Reserved,
+# contribution by Jorge Mora <mora@netapp.com>
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation; either version 2 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#===============================================================================
+import os
+import time
+import errno
+import signal
+import struct
+import traceback
+import nfstest_config as c
+from nfstest.rexec import Rexec
+from nfstest.test_util import TestUtil
+from fcntl import fcntl,F_RDLCK,F_WRLCK,F_UNLCK,F_SETLK,F_SETLKW,F_GETLK
+
+# Module constants
+__author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
+__version__   = '1.0.1'
+__copyright__ = "Copyright (C) 2013 NetApp, Inc."
+__license__   = "GPL v2"
+
+USAGE = """%prog --server <server> [--client <client>] [options]
+
+Locking tests
+=============
+Basic locking tests verify that a lock is granted using various arguments
+to fcntl. These include blocking and non-blocking locks, read or write locks,
+where the file is opened either for reading, writing or both. It also checks
+different ranges including limit conditions.
+
+Non-overlapping tests verity that locks are granted on both the client under
+test and a second process or a remote client when locking the same file.
+
+Overlapping tests verity that a lock is granted on the client under test
+and a second process or a remote client trying to lock the same file will
+be denied if a non-blocking lock is issue or will be blocked if a blocking
+lock is issue on the second process or remote client.
+
+Notes:
+    The user id in the local host and the host specified by --client must
+    have access to run commands as root using the 'sudo' command without
+    the need for a password.
+
+    The user id must be able to 'ssh' to remote host without the need for
+    a password."""
+
+# Test script ID
+SCRIPT_ID = "LOCK"
+
+# Basic tests
+BTESTS = ['btest01']
+
+# Non-overlapping tests using a second process
+NPTESTS = [
+    'nptest01',
+    'nptest02',
+    'nptest03',
+    'nptest04',
+]
+# Non-overlapping tests using a second client
+NCTESTS = [
+    'nctest01',
+    'nctest02',
+    'nctest03',
+    'nctest04',
+]
+# Overlapping lock tests using a second process
+OPTESTS = [
+    'optest01',
+    'optest02',
+    'optest03',
+    'optest04',
+    'optest05',
+    'optest06',
+    'optest07',
+    'optest08',
+]
+# Overlapping lock tests using a second client
+OCTESTS = [
+    'octest01',
+    'octest02',
+    'octest03',
+    'octest04',
+    'octest05',
+    'octest06',
+    'octest07',
+    'octest08',
+]
+
+# All tests
+TESTNAMES = BTESTS + NPTESTS + NCTESTS + OPTESTS + OCTESTS
+
+# Mapping dictionaries
+LOCKMAP    = {F_RDLCK:'F_RDLCK', F_WRLCK:'F_WRLCK', F_UNLCK:'F_UNLCK'}
+LOCKMAP_R  = {'read':F_RDLCK, 'write':F_WRLCK, 'unlock':F_UNLCK}
+SLOCKMAP   = {F_SETLK:'F_SETLK', F_SETLKW:'F_SETLKW'}
+SLOCKMAP_R = {'immediate':F_SETLK, 'block':F_SETLKW}
+OPENMAP    = {os.O_RDONLY:'O_RDONLY', os.O_WRONLY:'O_WRONLY', os.O_RDWR:'O_RDWR'}
+OPENMAP_R  = {'read':os.O_RDONLY, 'write':os.O_WRONLY, 'rdwr':os.O_RDWR}
+
+# Client option list of arguments separated by ":"
+CLOPTS = ["client", "server", "export", "nfsversion", "minorversion", "port", "proto", "sec"]
+# Client option list of arguments that should be converted to integers
+INTOPTS = ["nfsversion", "minorversion", "port"]
+
+# Locking and helper functions
+def getlock(fd, lock_type, offset=0, length=0, stype=F_SETLK, timeout=30):
+    """Get byte range lock on file given by file descriptor"""
+    lockdata = struct.pack('hhllhh', lock_type, 0, offset, length, 0, 0)
+    if stype == F_SETLK:
+        out = fcntl(fd, stype, lockdata)
+    else:
+        # Set alarm so the blocking lock could be interrupted
+        signal.alarm(timeout)
+        out = fcntl(fd, stype, lockdata)
+        signal.alarm(0)
+    return struct.unpack('hhllhh', out)
+
+def testlock(fd, lock_type, offset=0, length=0):
+    """Test byte range lock on file given by file descriptor"""
+    lockdata = struct.pack('hhllhh', lock_type, 0, offset, length, 0, 0)
+    out = fcntl(fd, F_GETLK, lockdata)
+    return struct.unpack('hhllhh', out)
+
+def get_ioerror(ioerror, err):
+    """Return fail message when expecting an error"""
+    fmsg = ""
+    # Test expression to return
+    expr = ioerror and ioerror.errno == err
+    if not ioerror:
+        fmsg = ": no error was returned"
+    elif ioerror.errno != err:
+        # Got the wrong error
+        expected = errno.errorcode[err]
+        error = errno.errorcode[ioerror.errno]
+        fmsg =  ": expecting %s, got %s" % (expected, error)
+    return (expr, fmsg)
+
+def get_range(offset, length):
+    """Return byte range (start, end) given by the offset and length"""
+    if length == 0:
+        # Lock until the end of file
+        end = 0xffffffffffffffff
+    else:
+        end = offset + length - 1
+    return (offset, end)
+
+# Main test object definition
+class LockTest(TestUtil):
+    """LockTest object
+
+       LockTest() -> New test object
+
+       Usage:
+           x = LockTest(testnames=['test1', ...])
+
+           # Run all the tests
+           x.run_tests()
+           x.exit()
+    """
+    def __init__(self, **kwargs):
+        """Constructor
+
+           Initialize object's private data.
+        """
+        TestUtil.__init__(self, **kwargs)
+        self.opts.version = "%prog " + __version__
+        hmsg = "Remote NFS client used for conflicting lock tests"
+        self.opts.add_option("--client", default=None, help=hmsg)
+        hmsg = "Offset of first lock granted [default: %default]"
+        self.opts.add_option("--offset", type="int", default=4096, help=hmsg)
+        hmsg = "Length of first lock granted [default: %default]"
+        self.opts.add_option("--length", type="int", default=4096, help=hmsg)
+        # Object attribute: self.unlock_delay
+        hmsg = "Time in seconds to unlock first lock [default: %default]"
+        self.opts.add_option("--unlock-delay", type="float", default=2.0, help=hmsg)
+        # Object attribute: self.lockw_timeout
+        hmsg = "Time in seconds to wait for blocked lock after " \
+               "conflicting lock has been released [default: %default]"
+        self.opts.add_option("--lockw-timeout", type="int", default=30, help=hmsg)
+        hmsg = "List of open types to test [default: %default]"
+        self.opts.add_option("--opentype", default="read,write,rdwr", help=hmsg)
+        hmsg = "List of lock types to test [default: %default]"
+        self.opts.add_option("--locktype", default="read,write", help=hmsg)
+        hmsg = "List of open types to test on remote client [default: %default]"
+        self.opts.add_option("--opentype2", default="read,write,rdwr", help=hmsg)
+        hmsg = "List of lock types to test on remote client [default: %default]"
+        self.opts.add_option("--locktype2", default="read,write", help=hmsg)
+        hmsg = "List of set lock types to test [default: %default]"
+        self.opts.add_option("--setlock", default="immediate,block", help=hmsg)
+        self.scan_options()
+        self.st_time = time.time()
+
+        # Sanity checks
+        if self.offset < 2:
+            self.opts.error("invalid value given in --offset [%d], must be > 1" % self.offset)
+        if self.length < 2:
+            self.opts.error("invalid value given in --length [%d], must be > 1" % self.length)
+
+        # Process options
+        self.open_list  = self.get_list(self.opentype,  OPENMAP_R)
+        self.lock_list  = self.get_list(self.locktype,  LOCKMAP_R)
+        self.open2_list = self.get_list(self.opentype2, OPENMAP_R)
+        self.lock2_list = self.get_list(self.locktype2, LOCKMAP_R)
+        self.setl_list  = self.get_list(self.setlock,   SLOCKMAP_R)
+        if self.open_list is None:
+            self.opts.error("invalid type given in --opentype [%s]" % self.opentype)
+        if self.lock_list is None:
+            self.opts.error("invalid type given in --locktype [%s]" % self.locktype)
+        if self.open2_list is None:
+            self.opts.error("invalid type given in --opentype2 [%s]" % self.opentype2)
+        if self.lock2_list is None:
+            self.opts.error("invalid type given in --locktype2 [%s]" % self.locktype2)
+        if self.setl_list is None:
+            self.opts.error("invalid type given in --setlock [%s]" % self.setlock)
+
+        self.mtindex = 1
+        self.rexecobjs = []
+
+        self.client_opts()
+        if len(self.client_list) > 1:
+            # As of now, only one client is allowed
+            self.opts.error("only one client is supported in --client [%s]" % self.client)
+
+    def client_opts(self):
+        """Process the client option either from the command line
+           or from the LOCK block of the config file
+
+           Clients are separated by a "," and each client definition can have
+           the following options separated by ":":
+               client:server:export:nfsversion:minorversion:port:proto:sec
+
+           Examples:
+               LOCK = {
+                   # Using positional options for minorversion=1
+                   client = client1::::1,client2
+                   # Using named options
+                   client = client1:minorversion=1,client2
+               }
+        """
+        if self.client is None:
+            # Client option from LOCK block of the config file
+            clients = self.test_options("client")
+            if len(clients) > 0 and type(clients) is not list:
+                self.opts.error("client option inside the '%s' id block should be a list" % SCRIPT_ID)
+        else:
+            # Client option from command line
+            clients = self.str_list(self.client)
+
+        self.client_list = []
+        for client in clients:
+            if client is None:
+                continue
+            # Get client arguments
+            clargs = self.str_list(client, sep=":")
+            index = 0
+            cldict = {}
+            while len(clargs) > 0:
+                val = clargs.pop(0)
+                arg = CLOPTS[index]
+                index += 1
+                if val is not None:
+                    dlist = val.split("=")
+                    if len(dlist) == 2:
+                        # Named argument
+                        arg = dlist[0].replace(" ", "")
+                        val = dlist[1].replace(" ", "")
+                    if arg in INTOPTS:
+                        val = int(val)
+                    cldict[arg] = val
+            self.client_list.append(cldict)
+
+    def lock_setup(self, **kwargs):
+        """Setup for locking tests:
+             - starts the second process if needed
+             - starts the remote procedure server on other clients if needed
+             - mount the export on remote clients
+             - mount the export locally
+             - call setup()
+
+           Arguments are passed to the main setup() method
+        """
+        # Find if second process should be started
+        second_process = False
+        for tname in NPTESTS + OPTESTS:
+            if tname in self.testlist:
+                second_process = True
+                break
+
+        # Find if remote process should be started
+        remote_process = False
+        for tname in NCTESTS + OCTESTS:
+            if tname in self.testlist:
+                remote_process = True
+                break
+
+        # Start remote procedure server locally
+        if second_process:
+            self.execobj = self.start_rexec()
+        else:
+            self.execobj = None
+
+        # Start remote procedure server on host
+        if not remote_process or len(self.client_list) < 1:
+            self.clientobj = None
+            self.rexecobj = None
+            for tname in NCTESTS + OCTESTS:
+                if tname in self.testlist:
+                    self.testlist.remove(tname)
+            if len(self.testlist) == 0:
+                self.opts.error("no test to run, specify option --client for --runtest='%s'" % self.runtest)
+        else:
+            for client_d in self.client_list:
+                client_args = dict(client_d)
+                client_name = client_args.pop('client')
+                self.mtindex += 1
+                self.create_host(client_name, **client_args)
+                self.clientobj.umount()
+                self.clientobj.mount()
+                self.rexecobj = self.start_rexec(client_name)
+                self.rexecobjs.append(self.rexecobj)
+
+        # Unmount server on local host
+        self.umount()
+        # Mount server on local host
+        self.mount()
+
+        # Call base object setup method
+        self.setup(**kwargs)
+
+    def start_rexec(self, clientname=""):
+        """Start remote procedure server locally or on the given host.
+           Set up the remote server with helper functions to lock and
+           unlock a file.
+
+           clientname:
+               Name of client where the remote procedure server will be started
+        """
+        logfile = None
+        if self.createlog:
+            logfile = self.get_logname()
+
+        # Start remote procedure server on given client
+        svr = "at %s" % clientname if len(clientname) else "locally"
+        self.dprint('DBG2', "Start remote procedure server %s" % svr)
+        execobj = Rexec(clientname, logfile=logfile)
+
+        # Setup function to lock and unlock a file
+        execobj.rimport("fcntl", ["fcntl", "F_SETLK"])
+        execobj.rimport("struct")
+        execobj.rimport("signal")
+        execobj.rcode(getlock)
+        # Set SIGALRM handler to do nothing but not ignoring the signal
+        # just to interrupt a blocked lock
+        execobj.reval("signal.signal(signal.SIGALRM, lambda signum,frame:None)")
+        return execobj
+
+    def get_time(self):
+        """Return the number of seconds since the object was instantiated"""
+        return time.time() - self.st_time
+
+    def get_opts_list(self, sflag=True, oflag=True, lflag=True, coflag=True, clflag=True):
+        """Return a list of all the permutations given by all option lists
+
+           sflag:
+               If true, use blocking and non-blocking locks
+           oflag:
+               If true, use open type of read, write and rdwr
+           lflag:
+               If true, use lock type of read, write and unlock
+           coflag:
+               If true, use open type of read, write and rdwr on second
+               process or client
+           clflag:
+               If true, use lock type of read, write and unlock on second
+               process or client
+        """
+        ret = []
+        setl_list  = self.setl_list  if sflag  else [None]
+        open_list  = self.open_list  if oflag  else [None]
+        lock_list  = self.lock_list  if lflag  else [None]
+        open2_list = self.open2_list if coflag else [None]
+        lock2_list = self.lock2_list if clflag else [None]
+        for stype in setl_list:
+            for oltype in open_list:
+                for ltype in lock_list:
+                    for octype in open2_list:
+                        for ctype in lock2_list:
+                            ret.append({
+                                'stype'  : stype,
+                                'oltype' : oltype,
+                                'ltype'  : ltype,
+                                'octype' : octype,
+                                'ctype'  : ctype,
+                            })
+        return ret
+
+    def open_file(self, otype, execobj=None):
+        """Open file with given open type on either local or remote client
+
+           otype:
+               Open type, either O_RDONLY, O_WRONLY or O_RDWR
+           execobj:
+               Rexec object if this open will be issued on a second
+               process or client
+        """
+        self.filename = self.files[0]
+        self.absfile = self.abspath(self.filename)
+        if otype & os.O_WRONLY == os.O_WRONLY:
+            ostr = "writing"
+        elif otype & os.O_RDWR == os.O_RDWR:
+            ostr = "reading and writing"
+        else:
+            ostr = "reading"
+
+        if execobj:
+            # OPEN on second process or remote client
+            pstr = "client" if execobj.remote else "process"
+            self.dprint('DBG3', "Open file for %s [%s] on second %s" % (ostr, self.filename, pstr))
+            fd = execobj.run(os.open, self.absfile, otype)
+        else:
+            # OPEN locally
+            self.dprint('DBG3', "Open file for %s [%s]" % (ostr, self.filename))
+            fd = os.open(self.absfile, otype)
+        return fd
+
+    def do_lock_test(self, fd, ltype, offset, length, msg, submsg=None, stype=F_SETLK, block=False, error=0, execobj=None):
+        """Do the actual lock on a file given by the file descriptor
+
+           fd:
+               File descriptor of file to lock
+           ltype:
+               Lock type: F_RDLCK, F_WRLCK or F_UNLCK
+           offset:
+               Starting offset of byte range lock
+           length:
+               Length of byte range lock
+           msg:
+               Test message to display
+           submsg:
+               Subtest message to display.
+           stype:
+               Blocking lock type: F_SETLK or F_SETLKW [default: F_SETLK]
+           block:
+               Expect lock to block [default: False]
+           error:
+               Expected locking error [default: 0]
+           execobj:
+               Object to lock file on a different process/client [default: None]
+        """
+        try:
+            fmsg = ""
+            pexpr = False
+            ioerr = None
+            # Set up debugging message options
+            lmsg = "Unlock"  if ltype == F_UNLCK else "Lock"
+            smsg = "F_SETLK" if stype == F_SETLK else "F_SETLKW"
+            (start, end) = get_range(offset, length)
+            info = "%s file (%s, %s) off=%d len=%d range(%d, %d)" % (lmsg, LOCKMAP[ltype], smsg, offset, length, start, end)
+            if execobj:
+                # Lock file in second process or remote client
+                pstr = "client" if execobj.remote else "process"
+                self.dprint('DBG3', info + " on second %s @%.2f" % (pstr, self.get_time()))
+                nowait = True if stype == F_SETLKW else False
+                out = execobj.run("getlock", fd, ltype, offset, length, stype, self.lockw_timeout, NOWAIT=nowait)
+                if nowait:
+                    # It is a blocking lock, it could block if overlapping range
+                    # Poll Rexec object to make sure the lock is blocked if it
+                    # is expected to block
+                    pexpr = execobj.poll(0.1)
+                    if pexpr:
+                        if block:
+                            # Expected to block, but did not
+                            fmsg = ": lock did not block"
+                        elif error != errno.EAGAIN:
+                            # Get lock results
+                            out = execobj.results()
+            else:
+                # Lock file locally
+                self.dprint('DBG3', info)
+                getlock(fd, ltype, offset, length, stype, self.lockw_timeout)
+        except IOError as ioerr:
+            # Set up fail message if expecting no errors
+            errstr = errno.errorcode[ioerr.errno]
+            self.dprint("DBG7", "Got error %s" % errstr)
+            fmsg = ": got error %s" % errstr
+        if error:
+            # Expecting an error
+            (expr, fmsg) = get_ioerror(ioerr, error)
+            self.test(expr, msg, subtest=submsg, failmsg=fmsg)
+        else:
+            # Not expecting an error
+            expr = not ioerr and (not block or not pexpr)
+            self.test(expr, msg, subtest=submsg, failmsg=fmsg)
+        return ioerr is None
+
+    def wait_for_lock(self, fd, submsg, execobj):
+        """Wait for blocked lock
+
+           fd:
+               File descriptor of file holding the current lock, so it will
+               be unlocked to let the blocked lock be granted
+           submsg:
+               Subtest message to display.
+           execobj:
+               Object on a different process/client for the blocked lock
+        """
+        fmsg = ""
+        out = None
+        expr = False
+        # Flag used for keeping track of the time since the first client
+        # unlocked the file and timed out if blocked lock is not granted
+        sl_time = 0
+        # Flag used for waiting to unlock file on the first client
+        stime = time.time()
+        # Flag used to verify if the unlock of the first client was done
+        need_unlock = True
+        # Polling granularity
+        delta = self.unlock_delay/5.0
+        self.dprint('DBG3', "Wait %.2f secs to unlock conflicting lock @%.2f" % (self.unlock_delay, self.get_time()))
+        dbgmsg = "Check if blocked lock is still waiting"
+        while True:
+            self.dprint('DBG7', "%s @%.2f" % (dbgmsg, self.get_time()))
+            if need_unlock and (expr or time.time() - stime >= self.unlock_delay):
+                # Unlock current file lock so the blocked lock could be granted
+                msg = "Unlocking full file after delay should be granted"
+                self.do_lock_test(fd, F_UNLCK, 0, 0, msg, submsg)
+                if expr:
+                    # Blocked lock has already been granted
+                    break
+                need_unlock = False
+                sl_time = time.time()
+                self.dprint('DBG3', "Wait up to %d secs to check if blocked lock has been granted @%.2f" % (self.lockw_timeout, self.get_time()))
+                dbgmsg = "Check if blocked lock has been granted"
+                delta = self.lockw_timeout/30.0
+                if delta < 0.2:
+                    delta = 0.2
+            if execobj.poll(delta):
+                try:
+                    # Blocking lock just returned
+                    self.dprint('DBG3', "Getting results from blocked lock @%.2f" % self.get_time())
+                    out = execobj.results()
+                    expr = True
+                except Exception as e:
+                    # Unable to get results from blocked lock
+                    if e.errno == errno.EINTR:
+                        self.test(False, "Timeout waiting for blocked lock to be granted", subtest=submsg)
+                    else:
+                        self.test(False, "Error while getting results from blocked lock", subtest=submsg, failmsg=": %s" % e)
+                    return out
+                if need_unlock:
+                    # Need to test if unlocking conflicting lock works
+                    continue
+                else:
+                    # Blocked lock has been granted
+                    break
+        if need_unlock:
+            self.test(not expr, "Blocked lock is granted before conflicting lock was unlocked", subtest=submsg)
+        else:
+            self.test(expr, "Blocked lock is granted after conflicting lock is released", subtest=submsg, failmsg=fmsg)
+
+        # Return results of blocked lock
+        return out
+
+    def basic_lock(self, execobj, oltype, ltype, octype, ctype, offset2, length2, stype):
+        """This is the main locking method for overlapping and non-overlapping
+           tests. This method does the following:
+               1. Open file locally
+               2. Lock file locally -- this is the conflicting lock
+               3. Open file on second process or remote client
+               4. Lock file on second process or remote client
+               5. If locks do not overlap, verify both locks are granted
+               6. If using a blocking lock on an overlapping range, then wait
+                  for the number of seconds given by option unlock-delay and
+                  verify the blocking lock is not granted until the conflicting
+                  has been unlocked at the end of the wait period. Once the
+                  conflicting lock has been unlocked verify the blocked lock
+                  is granted
+               7. If using a non-blocking lock on an overlapping range, verify
+                  the correct error is returned
+               8. Unlock both the local and remote locks
+
+           execobj:
+               Object on a different process/client used for the second lock
+           oltype:
+               Open type to use on local file
+           ltype:
+               Lock type to use on local file
+           octype:
+               Open type to use on second file (other process or remote)
+           ctype:
+               Lock type to use on second file (other process or remote)
+           offset2:
+               Lock starting offset for second lock
+           length2:
+               Lock length for second lock
+           stype:
+               Either a blocking or non-blocking lock
+        """
+        try:
+            err = 0
+            fdl = None
+            fdx = None
+
+            # Find if ranges overlap
+            (start1, end1) = get_range(self.offset, self.length)
+            (start2, end2) = get_range(offset2, length2)
+            isoverlap = (start1 <= end2 and start2 <= end1)
+
+            pstr = "client" if execobj.remote else "process"
+            smsg1 = ", lock1(%s, %s, %s)" % (OPENMAP[oltype], LOCKMAP[ltype], SLOCKMAP[stype])
+            smsg2 = ", lock2(%s, %s, %s)" % (OPENMAP[octype], LOCKMAP[ctype], SLOCKMAP[stype])
+
+            # Set up main test message
+            error = 0
+            blocking = False
+            ostr = "" if isoverlap else "non-"
+            if ctype == F_RDLCK and octype == os.O_WRONLY or \
+               ctype == F_WRLCK and octype == os.O_RDONLY:
+                error = errno.EBADF
+                imsg  = "return %s" % errno.errorcode[error]
+            elif not isoverlap or (ltype == F_RDLCK and ctype == F_RDLCK):
+                error = 0
+                imsg  = "be granted"
+                if isoverlap:
+                    imsg += " since both locks are %s" % LOCKMAP[ltype]
+            elif stype == F_SETLKW:
+                error = 0
+                imsg  = "block"
+                blocking = True
+            elif ltype != ctype or (ltype == F_WRLCK and ctype == ltype):
+                error = errno.EAGAIN
+                imsg  = "return %s" % errno.errorcode[error]
+            else:
+                error = 0
+                imsg  = "be granted"
+
+            lmsg = "be granted"
+            if ltype == F_RDLCK and oltype == os.O_WRONLY or \
+               ltype == F_WRLCK and oltype == os.O_RDONLY:
+                err  = errno.EBADF
+                lmsg = "return %s" % errno.errorcode[err]
+
+            # Open file on main process and lock it, this will become the
+            # conflicting lock
+            fdl = self.open_file(oltype)
+            submsg = " should %s%s" % (lmsg, smsg1)
+            msg = "Locking byte range"
+            self.do_lock_test(fdl, ltype, self.offset, self.length, msg, submsg, stype=stype, error=err)
+
+            if not err:
+                fdx = self.open_file(octype, execobj)
+                submsg = " should %s%s" % (imsg, smsg2)
+                msg = "locking with %soverlapping range on second %s" % (ostr, pstr)
+                locked = self.do_lock_test(fdx, ctype, offset2, length2, msg, submsg, stype=stype, error=error, execobj=execobj, block=blocking)
+                if blocking:
+                    # Wait for blocked lock to be granted by unlocking the
+                    # conflicting lock
+                    self.wait_for_lock(fdl, smsg2, execobj)
+                else:
+                    # No locking conflict so unlock local file
+                    msg = "Unlocking full file should be granted"
+                    self.do_lock_test(fdl, F_UNLCK, 0, 0, msg, smsg1)
+
+                    if not locked and error != errno.EBADF:
+                        xmsg = "be granted"
+                        if ctype == F_RDLCK and octype == os.O_WRONLY or \
+                           ctype == F_WRLCK and octype == os.O_RDONLY:
+                            err  = errno.EBADF
+                            xmsg = "return %s" % errno.errorcode[err]
+                        submsg = " should %s%s" % (xmsg, smsg2)
+                        msg = "Locking byte range on second %s" % pstr
+                        self.do_lock_test(fdx, ctype, offset2, length2, msg, submsg, stype=stype, error=err, execobj=execobj)
+                if error != errno.EBADF:
+                    msg = "Unlocking full file on second %s should be granted" % pstr
+                    self.do_lock_test(fdx, F_UNLCK, 0, 0, msg, smsg2, execobj=execobj)
+        except:
+            self.test(False, traceback.format_exc())
+        finally:
+            # Close open files
+            if fdl is not None:
+                os.close(fdl)
+            if fdx is not None:
+                execobj.run(os.close, fdx)
+
+    def do_basic_lock(self, execobj, offset2, length2, overlap=False):
+        """This is the main locking method for testing all different
+           permutations of the same test by varying the open type of both
+           files, the locking type and for blocking and non-blocking locks.
+
+           execobj:
+               Object on a different process/client used for the second lock
+           offset2:
+               Lock starting offset for second lock
+           length2:
+               Lock length for second lock
+           stype:
+               Either a blocking or non-blocking lock
+           overlap:
+               True if range is expected to overlap
+        """
+        # Find if ranges overlap
+        (start1, end1) = get_range(self.offset, self.length)
+        (start2, end2) = get_range(offset2, length2)
+        isoverlap = (start1 <= end2 and start2 <= end1)
+
+        # Check if ranges overlap when expected
+        fmsg = ": range1(%d, %d), range2(%d, %d)" % (start1, end1, start2, end2)
+        if overlap and not isoverlap:
+            self.test(False, "Range does not overlap", failmsg=fmsg)
+            return
+        elif not overlap and isoverlap:
+            self.test(False, "Range overlaps", failmsg=fmsg)
+            return
+
+        count = 1
+        for item in self.get_opts_list():
+            stype  = item['stype']
+            oltype = item['oltype']
+            ltype  = item['ltype']
+            octype = item['octype']
+            ctype  = item['ctype']
+
+            if self.tverbose == 2:
+                self.dprint("INFO", "Running %s test %d" % (self.testname, count))
+
+            # Do actual test
+            self.basic_lock(execobj, oltype, ltype, octype, ctype, offset2, length2, stype)
+            count += 1
+
+    def btest01_test(self):
+        """Basic locking tests
+           These tests verify that a lock is granted using various arguments
+           to fcntl. These include blocking and non-blocking locks, read or
+           write locks, where the file is opened either for reading, writing
+           or both. It also checks different ranges including limit conditions.
+        """
+        self.test_group("Basic locking tests")
+        nmax = 0x7fffffff if self.nfsversion == 2 else 0x7fffffffffffffff
+        tlist = [ (0, 0), (0, 1), (1, 0), (0, self.length),
+                  (self.offset, self.length), (self.offset, 0),
+                  (self.offset, 1), (0, nmax), (1, nmax), (nmax, 1),
+                  (nmax, 0), (0, -1), (-1, 0) ]
+
+        count = 1
+        for offset, length in tlist:
+            offstr = "NMAX" if offset == nmax else str(offset)
+            lenstr = "NMAX" if length == nmax else str(length)
+
+            for item in self.get_opts_list(coflag=False, clflag=False):
+                try:
+                    fd = None
+                    if self.tverbose > 1:
+                        self.dprint("INFO", "Running %s test %d" % (self.testname, count))
+                    count += 1
+                    stype  = item['stype']
+                    oltype = item['oltype']
+                    ltype  = item['ltype']
+                    lerr = 0
+                    uerr = 0
+                    if offset < 0 or length < 0:
+                        lerr  = errno.EINVAL
+                        uerr  = errno.EINVAL
+                    elif ltype == F_RDLCK and oltype == os.O_WRONLY or \
+                       ltype == F_WRLCK and oltype == os.O_RDONLY:
+                        lerr  = errno.EBADF
+                    lmsg = "return %s" % errno.errorcode[lerr] if lerr else "be granted"
+                    umsg = "return %s" % errno.errorcode[uerr] if uerr else "be granted"
+                    submsg = "open(%s) lock(%s, %s)" % (OPENMAP[oltype], LOCKMAP[ltype], SLOCKMAP[stype])
+                    lsubmsg = " should %s, %s" % (lmsg, submsg)
+                    usubmsg = " should %s, %s" % (umsg, submsg)
+
+                    # Open file
+                    fd = self.open_file(oltype)
+
+                    msg = "Unlocking byte range (off:%s, len:%s) while file is not locked" % (offstr, lenstr)
+                    self.do_lock_test(fd, F_UNLCK, offset, length, msg, usubmsg, stype=stype, error=uerr)
+
+                    msg = "Locking byte range (off:%s, len:%s)" % (offstr, lenstr)
+                    locked = self.do_lock_test(fd, ltype, offset, length, msg, lsubmsg, stype=stype, error=lerr)
+                    if locked:
+                        msg = "Unlocking byte range (off:%s, len:%s)" % (offstr, lenstr)
+                        self.do_lock_test(fd, F_UNLCK, offset, length, msg, usubmsg, stype=stype, error=uerr)
+                except:
+                    self.test(False, traceback.format_exc())
+                finally:
+                    # Close open file
+                    if fd is not None:
+                        os.close(fd)
+
+    def ntest01(self, execobj):
+        """Locking non-overlapping range from a second process where end2 < start1
+             process1:                     |------------------|
+             process2: |--------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        self.test_group("Locking non-overlapping range from a second %s where end2 < start1" % pstr)
+        self.do_basic_lock(execobj, 0, int(self.offset/2))
+
+    def ntest02(self, execobj):
+        """Locking non-overlapping range from a second process where end2 == start1 - 1
+             process1:                     |------------------|
+             process2: |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        self.test_group("Locking non-overlapping range from a second %s where end2 == start1 - 1" % pstr)
+        self.do_basic_lock(execobj, 0, self.offset)
+
+    def ntest03(self, execobj):
+        """Locking non-overlapping range from a second process where start2 > end1
+             process1: |------------------|
+             process2:                               |--------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset + self.length + int(self.length/2)
+        length2 = int(self.length/2)
+        self.test_group("Locking non-overlapping range from a second %s where start2 > end1" % pstr)
+        self.do_basic_lock(execobj, offset2, length2)
+
+        self.test_group("Locking non-overlapping range from a second %s where start2 > end1 and end2 == EOF" % pstr)
+        self.do_basic_lock(execobj, offset2, 0)
+
+    def ntest04(self, execobj):
+        """Locking non-overlapping range from a second process where start2 == end1 + 1
+             process1: |------------------|
+             process2:                     |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset + self.length
+        self.test_group("Locking non-overlapping range from a second %s where start2 == end1 + 1" % pstr)
+        self.do_basic_lock(execobj, offset2, self.length)
+
+        self.test_group("Locking non-overlapping range from a second %s where start2 == end1 + 1 and end2 == EOF" % pstr)
+        self.do_basic_lock(execobj, offset2, 0)
+
+    def otest01(self, execobj):
+        """Locking same range from a second process
+             process1:                     |------------------|
+             process2:                     |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        self.test_group("Locking same range from a second %s" % pstr)
+        self.do_basic_lock(execobj, self.offset, self.length, overlap=True)
+
+    def otest02(self, execobj):
+        """Locking overlapping range from a second process where start2 < start1
+             process1:                     |------------------|
+             process2:           |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset - int(self.length/2)
+        if offset2 < 0:
+            offset2 = 0
+        length2 = self.offset + int(self.length/2) - offset2
+        self.test_group("Locking overlapping range from a second %s where start2 < start1" % pstr)
+        self.do_basic_lock(execobj, offset2, length2, overlap=True)
+
+        if offset2 > 0:
+            length2 = self.offset + int(self.length/2)
+            self.test_group("Locking overlapping range from a second %s where start2 < start1 and start2 == 0" % pstr)
+            self.do_basic_lock(execobj, 0, length2, overlap=True)
+
+    def otest03(self, execobj):
+        """Locking overlapping range from a second process where end2 > end1
+             process1:                     |------------------|
+             process2:                               |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset + int(self.length/2)
+        self.test_group("Locking overlapping range from a second %s where end2 > end1" % pstr)
+        self.do_basic_lock(execobj, offset2, self.length, overlap=True)
+
+        self.test_group("Locking overlapping range from a second %s where end2 > end1 and end2 == EOF" % pstr)
+        self.do_basic_lock(execobj, offset2, 0, overlap=True)
+
+    def otest04(self, execobj):
+        """Locking overlapping range from a second process where range2 is entirely within range1
+             process1:                     |------------------|
+             process2:                          |--------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset + int(self.length/4)
+        length2 = int(self.length/2)
+        self.test_group("Locking overlapping range from a second %s where range2 is entirely within range1" % pstr)
+        self.do_basic_lock(execobj, offset2, length2, overlap=True)
+
+    def otest05(self, execobj):
+        """Locking overlapping range from a second process where range1 is entirely within range2
+             process1:                     |------------------|
+             process2:                |----------------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset - int(self.length/4)
+        if offset2 < 0:
+            offset2 = 0
+        length2 = self.length + int(self.length/2)
+        self.test_group("Locking overlapping range from a second %s where range1 is entirely within range2" % pstr)
+        self.do_basic_lock(execobj, offset2, length2, overlap=True)
+
+        if offset2 > 0:
+            length2 = self.offset + self.length + int(self.length/4)
+            self.test_group("Locking overlapping range from a second %s where range1 is entirely within range2 and start2 == 0" % pstr)
+            self.do_basic_lock(execobj, 0, length2, overlap=True)
+
+        self.test_group("Locking overlapping range from a second %s where range1 is entirely within range2 and end2 == EOF" % pstr)
+        self.do_basic_lock(execobj, offset2, 0, overlap=True)
+
+    def otest06(self, execobj):
+        """Locking full file range from a second process"""
+        pstr = "client" if execobj.remote else "process"
+        self.test_group("Locking full file range from a second %s" % pstr)
+        self.do_basic_lock(execobj, 0, 0, overlap=True)
+
+    def otest07(self, execobj):
+        """Locking overlapping range from a second process where end2 == start1
+             process1:                     |------------------|
+             process2:  |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset - self.length + 1
+        if offset2 < 0:
+            offset2 = 0
+        length2 = self.offset - offset2 + 1
+        self.test_group("Locking overlapping range from a second %s where end2 == start1" % pstr)
+        self.do_basic_lock(execobj, offset2, length2, overlap=True)
+
+        if offset2 > 0:
+            length2 = self.offset + 1
+            self.test_group("Locking overlapping range from a second %s where end2 == start1 and start2 == 0" % pstr)
+            self.do_basic_lock(execobj, 0, length2, overlap=True)
+
+    def otest08(self, execobj):
+        """Locking overlapping range from a second process where start2 == end1
+             process1:  |------------------|
+             process2:                     |------------------|
+        """
+        pstr = "client" if execobj.remote else "process"
+        offset2 = self.offset + self.length - 1
+        self.test_group("Locking overlapping range from a second %s where start2 == end1" % pstr)
+        self.do_basic_lock(execobj, offset2, self.length, overlap=True)
+
+        self.test_group("Locking overlapping range from a second %s where start2 == end1 and end2 == EOF" % pstr)
+        self.do_basic_lock(execobj, offset2, 0, overlap=True)
+
+    def nptest01_test(self):
+        """Locking non-overlapping range from a second process where end2 < start1
+             process1:                     |------------------|
+             process2: |--------|
+        """
+        self.ntest01(self.execobj)
+
+    def nptest02_test(self):
+        """Locking non-overlapping range from a second process where end2 == start1 - 1
+             process1:                     |------------------|
+             process2: |------------------|
+        """
+        self.ntest02(self.execobj)
+
+    def nptest03_test(self):
+        """Locking non-overlapping range from a second process where start2 > end1
+             process1: |------------------|
+             process2:                               |--------|
+        """
+        self.ntest03(self.execobj)
+
+    def nptest04_test(self):
+        """Locking non-overlapping range from a second process where start2 == end1 + 1
+             process1: |------------------|
+             process2:                     |------------------|
+        """
+        self.ntest04(self.execobj)
+
+    def nctest01_test(self):
+        """Locking non-overlapping range from a second client where end2 < start1
+             client1:                      |------------------|
+             client2:  |--------|
+        """
+        self.ntest01(self.rexecobj)
+
+    def nctest02_test(self):
+        """Locking non-overlapping range from a second client where end2 == start1 - 1
+             client1:                      |------------------|
+             client2:  |------------------|
+        """
+        self.ntest02(self.rexecobj)
+
+    def nctest03_test(self):
+        """Locking non-overlapping range from a second client where start2 > end1
+             client1:  |------------------|
+             client2:                                |--------|
+        """
+        self.ntest03(self.rexecobj)
+
+    def nctest04_test(self):
+        """Locking non-overlapping range from a second client where start2 == end1 + 1
+             client1:  |------------------|
+             client2:                      |------------------|
+        """
+        self.ntest04(self.rexecobj)
+
+    def optest01_test(self):
+        """Locking same range from a second process
+             process1:                     |------------------|
+             process2:                     |------------------|
+        """
+        self.otest01(self.execobj)
+
+    def optest02_test(self):
+        """Locking overlapping range from a second process where start2 < start1
+             process1:                     |------------------|
+             process2:           |------------------|
+        """
+        self.otest02(self.execobj)
+
+    def optest03_test(self):
+        """Locking overlapping range from a second process where end2 > end1
+             process1:                     |------------------|
+             process2:                               |------------------|
+        """
+        self.otest03(self.execobj)
+
+    def optest04_test(self):
+        """Locking overlapping range from a second process where range2 is entirely within range1
+             process1:                     |------------------|
+             process2:                          |--------|
+        """
+        self.otest04(self.execobj)
+
+    def optest05_test(self):
+        """Locking overlapping range from a second process where range1 is entirely within range2
+             process1:                     |------------------|
+             process2:                |----------------------------|
+        """
+        self.otest05(self.execobj)
+
+    def optest06_test(self):
+        """Locking full file range from a second process"""
+        self.otest06(self.execobj)
+
+    def optest07_test(self):
+        """Locking overlapping range from a second process where end2 == start1
+             process1:                     |------------------|
+             process2:  |------------------|
+        """
+        self.otest07(self.execobj)
+
+    def optest08_test(self):
+        """Locking overlapping range from a second process where start2 == end1
+             process1:  |------------------|
+             process2:                     |------------------|
+        """
+        self.otest08(self.execobj)
+
+    def octest01_test(self):
+        """Locking same range from a second client
+             client1:                      |------------------|
+             client2:                      |------------------|
+        """
+        self.otest01(self.rexecobj)
+
+    def octest02_test(self):
+        """Locking overlapping range from a second client where start2 < start1
+             client1:                      |------------------|
+             client2:            |------------------|
+        """
+        self.otest02(self.rexecobj)
+
+    def octest03_test(self):
+        """Locking overlapping range from a second client where end2 > end1
+             client1:                      |------------------|
+             client2:                                |------------------|
+        """
+        self.otest03(self.rexecobj)
+
+    def octest04_test(self):
+        """Locking overlapping range from a second client where range2 is entirely within range1
+             client1:                      |------------------|
+             client2:                           |--------|
+        """
+        self.otest04(self.rexecobj)
+
+    def octest05_test(self):
+        """Locking overlapping range from a second client where range1 is entirely within range2
+             client1:                      |------------------|
+             client2:                 |----------------------------|
+        """
+        self.otest05(self.rexecobj)
+
+    def octest06_test(self):
+        """Locking full file range from a second client"""
+        self.otest06(self.rexecobj)
+
+    def octest07_test(self):
+        """Locking overlapping range from a second client where end2 == start1
+             client1:                      |------------------|
+             client2:   |------------------|
+        """
+        self.otest07(self.rexecobj)
+
+    def octest08_test(self):
+        """Locking overlapping range from a second client where start2 == end1
+             client1:   |------------------|
+             client2:                      |------------------|
+        """
+        self.otest08(self.rexecobj)
+
+################################################################################
+#  Entry point
+x = LockTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
+
+try:
+    # Call setup
+    x.lock_setup(nfiles=2)
+
+    # Run all the tests
+    x.run_tests()
+except Exception:
+    x.test(False, traceback.format_exc())
+finally:
+    x.exit()
