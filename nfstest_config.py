@@ -114,6 +114,7 @@ NFSTEST_ALLMODS = [
     'formatstr.py',
     'nfstest/host.py',
     'nfstest/nfs_util.py',
+    'nfstest/rexec.py',
     'nfstest/test_util.py',
     'packet/pkt.py',
     'packet/pktt.py',
