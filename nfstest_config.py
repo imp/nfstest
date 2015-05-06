@@ -106,6 +106,7 @@ NFSTEST_SCRIPTS = [
     'test/nfstest_cache',
     'test/nfstest_delegation',
     'test/nfstest_dio',
+    'test/nfstest_io',
     'test/nfstest_lock',
     'test/nfstest_pnfs',
     'test/nfstest_posix',
@@ -113,6 +114,7 @@ NFSTEST_SCRIPTS = [
 NFSTEST_ALLMODS = [
     'baseobj.py',
     'formatstr.py',
+    'nfstest/file_io.py',
     'nfstest/host.py',
     'nfstest/nfs_util.py',
     'nfstest/rexec.py',
