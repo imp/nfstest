@@ -372,6 +372,12 @@ class BaseObj(FormatStr):
         if _logfh != None:
             _logfh.write(data + "\n")
 
+    @staticmethod
+    def flush_log():
+        """Flush data to log file."""
+        if _logfh != None:
+            _logfh.flush()
+
     def dprint(self, level, msg, indent=0):
         """Print debug message if level is allowed by the verbose level
            given in debug_level().
