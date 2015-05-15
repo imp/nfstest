@@ -75,9 +75,13 @@ class Unpack(object):
            short_int = x.unpack(2, '!H')[0]
 
            # Unpack different basic types
-           char_int  = x.unpack_char()
-           short_int = x.unpack_short()
+           char      = x.unpack_char()
+           uchar     = x.unpack_uchar()
+           short     = x.unpack_short()
+           ushort    = x.unpack_ushort()
+           int       = x.unpack_int()
            uint      = x.unpack_uint()
+           int64     = x.unpack_int64()
            uint64    = x.unpack_uint64()
            data1     = x.unpack_opaque()
            data2     = x.unpack_opaque(64)  # Length of opaque must be <= 64
@@ -233,16 +237,32 @@ class Unpack(object):
         return struct.unpack(fmt, self.read(size))
 
     def unpack_char(self):
+        """Get a signed char"""
+        return self.unpack(1, '!b')[0]
+
+    def unpack_uchar(self):
         """Get an unsigned char"""
         return self.unpack(1, '!B')[0]
 
     def unpack_short(self):
+        """Get a signed short integer"""
+        return self.unpack(2, '!h')[0]
+
+    def unpack_ushort(self):
         """Get an unsigned short integer"""
         return self.unpack(2, '!H')[0]
+
+    def unpack_int(self):
+        """Get a signed integer"""
+        return self.unpack(4, '!i')[0]
 
     def unpack_uint(self):
         """Get an unsigned integer"""
         return self.unpack(4, '!I')[0]
+
+    def unpack_int64(self):
+        """Get a signed 64 bit integer"""
+        return self.unpack(8, '!q')[0]
 
     def unpack_uint64(self):
         """Get an unsigned 64 bit integer"""
