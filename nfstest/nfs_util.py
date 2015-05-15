@@ -20,7 +20,7 @@ It also provides a mechanism to enable NFS/RPC kernel debug and saving the
 log messages for further analysis.
 
 Furthermore, methods for finding specific NFSv4 operations within the packet
-trace is also included.
+trace are also included.
 """
 import os
 import re
