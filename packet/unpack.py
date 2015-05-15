@@ -21,7 +21,7 @@ import nfstest_config as c
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '2.0'
+__version__   = '2.1'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -71,8 +71,8 @@ class Unpack(object):
            # Restore state
            x.restore_state(sid)
 
-           # Unpack an 'unsigned short' (2 bytes)
-           short_int = x.unpack(2, 'H')[0]
+           # Unpack an 'unsigned short' (2 bytes in network order)
+           short_int = x.unpack(2, '!H')[0]
 
            # Unpack different basic types
            char_int  = x.unpack_char()
@@ -230,23 +230,23 @@ class Unpack(object):
            fmt:
                Format string on how to process data
         """
-        return struct.unpack('!'+fmt, self.read(size))
+        return struct.unpack(fmt, self.read(size))
 
     def unpack_char(self):
         """Get an unsigned char"""
-        return self.unpack(1, 'B')[0]
+        return self.unpack(1, '!B')[0]
 
     def unpack_short(self):
         """Get an unsigned short integer"""
-        return self.unpack(2, 'H')[0]
+        return self.unpack(2, '!H')[0]
 
     def unpack_uint(self):
         """Get an unsigned integer"""
-        return self.unpack(4, 'I')[0]
+        return self.unpack(4, '!I')[0]
 
     def unpack_uint64(self):
         """Get an unsigned 64 bit integer"""
-        return self.unpack(8, 'Q')[0]
+        return self.unpack(8, '!Q')[0]
 
     def unpack_opaque(self, maxcount=0):
         """Get a variable length opaque up to a maximum length of maxcount"""

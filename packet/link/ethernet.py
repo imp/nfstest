@@ -63,7 +63,7 @@ class ETHERNET(BaseObj):
                access to the parent layers.
         """
         unpack = pktt.unpack
-        ulist = unpack.unpack(14, '6s6sH')
+        ulist = unpack.unpack(14, "!6s6sH")
         self.dst  = MacAddr(ulist[0].encode('hex'))
         self.src  = MacAddr(ulist[1].encode('hex'))
         self.type = ulist[2]

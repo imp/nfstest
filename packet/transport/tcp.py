@@ -113,7 +113,7 @@ class TCP(BaseObj):
         """
         # Decode the TCP layer header
         unpack = pktt.unpack
-        ulist = unpack.unpack(20, 'HHIIHHHH')
+        ulist = unpack.unpack(20, "!HHIIHHHH")
         self.src_port    = ulist[0]
         self.dst_port    = ulist[1]
         self.seq_number  = ulist[2]

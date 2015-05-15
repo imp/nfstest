@@ -89,7 +89,7 @@ class IPv4(BaseObj):
         """
         # Decode IP header
         unpack = pktt.unpack
-        ulist = unpack.unpack(20, 'BBHHHBBH4B4B')
+        ulist = unpack.unpack(20, "!BBHHHBBH4B4B")
         self.version         = (ulist[0] >> 4)
         self.IHL             = (ulist[0] & 0x0F)
         self.header_size     = 4*self.IHL

@@ -65,7 +65,7 @@ class IPv6(IPv4):
                access to the parent layers.
         """
         unpack = pktt.unpack
-        ulist = unpack.unpack(40, 'IHBB16s16s')
+        ulist = unpack.unpack(40, "!IHBB16s16s")
         self.version       = (ulist[0] >> 28)
         self.traffic_class = (ulist[0] >> 20)&0xFF
         self.flow_label    = ulist[0]&0xFFF
