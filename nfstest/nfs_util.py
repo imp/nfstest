@@ -777,6 +777,10 @@ class NFSUtil(Host):
             self.test(not pktcall, "RECLAIM_COMPLETE should not be sent to %s%s" % (server_type, dsmds))
         else:
             self.test(pktcall, "RECLAIM_COMPLETE should be sent to %s" % server_type)
+        if pktcall:
+            # Make sure to start the next packet search right after the
+            # RECLAIM_COMPLETE call
+            self.pktt.rewind(pktcall.record.index)
 
         if not ds:
             # Find packet having a GETATTR asking for FATTR4_LEASE_TIME(bit 10)
