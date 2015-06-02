@@ -315,7 +315,30 @@ class DelegTest(TestUtil):
         try:
             self.trace_open()
 
-            (fh, op_stid, deleg_stid) = self.find_open(filename=self.filename, deleg_type=deleg_type)
+            filehandle = None
+            if stat:
+                # Find the LOOKUP for the file under test
+                while True:
+                    (lookupcall, lookupreply) = self.find_nfs_op(OP_LOOKUP, self.server_ipaddr, self.port, src_ipaddr=self.client_ipaddr)
+                    if lookupcall is None or lookupcall.NFSop.objname == self.filename:
+                        # Found LOOKUP for the filename or the end of the
+                        # trace file has been reached
+                        break
+                self.test(lookupcall, "LOOKUP operation should be sent")
+                if lookupreply:
+                    # GETFH should be the operation following the LOOKUP,
+                    # but look for it just in case it is not
+                    idx = lookupreply.NFSidx + 1
+                    resarray = lookupreply.nfs.resarray
+                    while (idx < len(resarray) and resarray[idx].resop != OP_GETFH):
+                        idx += 1
+                    if idx >= len(resarray):
+                        # Could not find GETFH
+                        self.test(False, "Could not find GETFH operation in the LOOKUP compound")
+                    # Get the file handle for the file under test
+                    filehandle = lookupreply.nfs.resarray[idx].object
+
+            (fh, op_stid, deleg_stid) = self.find_open(filename=self.filename, claimfh=filehandle, deleg_type=deleg_type, anyclaim=True)
             self.test(deleg_stid != None, "%s delegation should be granted" % mode_str)
             save_index = self.pktt.index
             if deleg_stid is None:
