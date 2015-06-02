@@ -490,14 +490,19 @@ class Host(BaseObj):
         """Get IP address associated with the given host name.
            This could be run as an instance or class method.
         """
+        lstr = ""
         ipstr = "v6" if ipv6 else "v4"
         family = socket.AF_INET6 if ipv6 else socket.AF_INET
         if len(host) == 0:
+            lstr = "local "
             host = socket.gethostname()
 
-        infolist = socket.getaddrinfo(host, 2049, 0, 0, socket.SOL_TCP)
+        try:
+            infolist = socket.getaddrinfo(host, 2049, 0, 0, socket.SOL_TCP)
+        except Exception as e:
+            infolist = []
         for info in infolist:
             # Ignore loopback addresses
             if info[0] == family and info[4][0] not in ('127.0.0.1', '::1'):
                 return info[4][0]
-        raise Exception("Unable to get IP%s address for host '%s'" % (ipstr, host))
+        raise Exception("Unable to get IP%s address for %shost '%s'" % (ipstr, lstr, host))
