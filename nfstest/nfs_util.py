@@ -101,7 +101,6 @@ class NFSUtil(Host):
         self.tmpdir    = kwargs.pop("tmpdir",    c.NFSTEST_TMPDIR)
         self.tbsize    = kwargs.pop("tbsize",    50000)
         self._nfsdebug = False
-        Host.__init__(self)
 
         # Initialize object variables
         self.dbgidx = 1
@@ -118,6 +117,9 @@ class NFSUtil(Host):
         self.dslist = []
         self.stateid = None
         self.dsismds = False
+
+        # Call base class constructor
+        super(NFSUtil, self).__init__()
 
         # Initialize all test variables
         self.writeverf    = None
@@ -146,8 +148,8 @@ class NFSUtil(Host):
         self.clientobj = None
         while self.clients:
             self.clients.pop()
-        # Call base destructor
-        Host.__del__(self)
+        # Call base class destructor
+        super(NFSUtil, self).__del__()
 
     def create_host(self, host, **kwargs):
         """Create client host object and set defaults."""
