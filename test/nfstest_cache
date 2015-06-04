@@ -155,7 +155,6 @@ class CacheTest(TestUtil):
                Test data caching if true, otherwise test attribute caching
         """
         try:
-            self.trace_start()
             fd = None
             attr = 'data' if data_cache else 'attribute'
             header = "Verify consistency of %s caching with %s on a file" % (attr, self.str_nfs())
@@ -283,7 +282,6 @@ class CacheTest(TestUtil):
         finally:
             if fd:
                 fd.close()
-            self.trace_stop()
 
     def dir_test(self, data_cache, dirlist, nlink, atime=0, inwire=False):
         """Evaluate attribute/data caching test on a directory.

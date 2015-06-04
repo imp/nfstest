@@ -138,6 +138,8 @@ class DioTest(TestUtil):
         self.opts.add_option("--biotype", default='none,read,write', help="List of buffered I/O types to test [default: '%default']")
         self.opts.add_option("--withdeleg", default='false,true', help="Use delegation on tests [default: both without and with delegation]")
         self.scan_options()
+        # Disable createtraces option
+        self.createtraces = False
 
         # Flag which defines if client is using new style direct I/O where
         # the use of non-aligned buffers result in sending the I/O to the

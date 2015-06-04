@@ -127,6 +127,8 @@ class DelegTest(TestUtil):
         self.opts.add_option("--lock-offset", type="int", default=0, help="Starting offset for lock [default: %default]")
         self.opts.add_option("--lock-len", type="int", default=0, help="Number of bytes to lock [default: %default]")
         self.scan_options()
+        # Disable createtraces option
+        self.createtraces = False
 
         if self.client != None:
             self.create_host(self.client)

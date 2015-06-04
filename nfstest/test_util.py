@@ -271,6 +271,7 @@ class TestUtil(NFSUtil):
         self.opts.add_option("--nocleanup", action="store_true", default=False, help="Do not cleanup")
         self.opts.add_option("--rmtraces", action="store_true", default=False, help="Remove trace files [default: remove trace files if no errors]")
         self.opts.add_option("--keeptraces", action="store_true", default=False, help="Do not remove any trace files [default: remove trace files if no errors]")
+        self.opts.add_option("--createtraces", action="store_true", default=False, help="Create a packet trace for each test [default: %default]")
         self.opts.add_option("--createlog", action="store_true", default=False, help="Create log file")
         self.opts.add_option("--bugmsgs", default=self.bugmsgs, help="File containing test messages to mark as bugs if they failed")
         self.opts.add_option("--ignore", action="store_true", default=self.ignore, help="Ignore all bugs given by bugmsgs")
@@ -380,6 +381,16 @@ class TestUtil(NFSUtil):
                # For boolean (flag) options
                <option_name>
 
+           Process options files and make sure not to process the same file
+           twice, this is used for the case where HOMECFG and CWDCFG are the
+           same, more specifically when environment variable HOME is not
+           defined. Also, the precedence order is defined as follows:
+             1. options given in command line
+             2. options given in file specified by the -f|--file option
+             3. options given in file specified by ./.nfstest
+             4. options given in file specified by $HOME/.nfstest
+             5. options given in file specified by /etc/nfstest
+
            NOTE:
              Must use the long name of the option (--<option_name>) in the file.
         """
@@ -389,12 +400,6 @@ class TestUtil(NFSUtil):
             # same file twice, this is used for the case where HOMECFG and
             # CWDCFG are the same, more specifically when environment variable
             # HOME is not defined.
-            # Also, the precedence order is defined as follows:
-            #   1. options given in command line
-            #   2. options given in file specified by the -f|--file option
-            #   3. options given in file specified by ./.nfstest
-            #   4. options given in file specified by $HOME/.nfstest
-            #   5. options given in file specified by /etc/nfstest
             ofiles = {}
             self.optfiles = [[opts.file, []]] if opts.file else []
             for optfile in [c.NFSTEST_CWDCFG, c.NFSTEST_HOMECFG, c.NFSTEST_CONFIG]:
@@ -688,6 +693,8 @@ class TestUtil(NFSUtil):
                 self.testname = name
                 # Execute test
                 self.dprint('INFO', "Running test: %s" % name)
+                if self.createtraces:
+                    self.trace_start()
                 getattr(self, testmethod)(**kwargs)
 
     def _print_msg(self, msg, tid=None):

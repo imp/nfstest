@@ -240,7 +240,6 @@ class PosixTest(TestUtil):
         """
         TestUtil.__init__(self, **kwargs)
         self.opts.version = "%prog " + __version__
-        self.opts.add_option("--createtrace", action="store_true", default=False, help="Start a packet trace [default: no packet trace is created]")
         self.scan_options()
 
         # Load share library - used for POSIX functions not implemented
@@ -1617,8 +1616,6 @@ x = PosixTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
 x.setup(nfiles=2)
 
 x.umount()
-if x.createtrace:
-    x.trace_start()
 x.mount()
 
 try:
@@ -1627,7 +1624,5 @@ try:
 except Exception:
     x.test(False, traceback.format_exc())
 finally:
-    if x.createtrace:
-        x.umount()
-        x.trace_stop()
+    x.umount()
     x.exit()

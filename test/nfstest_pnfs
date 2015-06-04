@@ -97,6 +97,8 @@ class pNFSTest(TestUtil):
         TestUtil.__init__(self, **kwargs)
         self.opts.version = "%prog " + __version__
         self.scan_options()
+        # Disable createtraces option
+        self.createtraces = False
         self.deviceids = {}
         self.stripe_size = None
         if self.nfsversion != 4 or self.minorversion == 0:
