@@ -49,6 +49,9 @@ Notes:
     The user id must be able to 'ssh' to remote host without the need for
     a password."""
 
+# Test script ID
+SCRIPT_ID = "CACHE"
+
 TESTNAMES = [
     'acregmin_attr',
     'acregmax_attr',
@@ -575,7 +578,7 @@ class CacheTest(TestUtil):
 
 ################################################################################
 #  Entry point
-x = CacheTest(usage=USAGE, testnames=TESTNAMES)
+x = CacheTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
 
 try:
     # Unmount server on remote client
