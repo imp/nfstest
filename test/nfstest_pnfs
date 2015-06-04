@@ -46,6 +46,9 @@ Notes:
     The user id in the local host must have access to run commands as root
     using the 'sudo' command without the need for a password."""
 
+# Test script ID
+SCRIPT_ID = "PNFS"
+
 TESTNAMES = [
     'read',
     'write',
@@ -1253,7 +1256,7 @@ class pNFSTest(TestUtil):
 ################################################################################
 # Entry point
 NFILES = 3
-x = pNFSTest(usage=USAGE, testnames=TESTNAMES)
+x = pNFSTest(usage=USAGE, testnames=TESTNAMES, sid=SCRIPT_ID)
 
 try:
     x.trace_start()
