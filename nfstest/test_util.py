@@ -58,7 +58,7 @@ from optparse import OptionParser, IndentedHelpFormatter
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.9'
+__version__   = '1.1'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -177,6 +177,8 @@ class TestUtil(NFSUtil):
         self.test_msgs = []
         self._msg_count = {}
         self._reset_files()
+        self._runtest = True
+        self.createtraces = False
 
         for tid in _test_map:
             self._msg_count[tid] = 0
@@ -194,9 +196,9 @@ class TestUtil(NFSUtil):
            and reset network.
         """
         self.debug_repr(0)
-        self.dprint('DBG7', "")
-        self.dprint('DBG7', "Calling %s() destructor" % self.__class__.__name__)
         self._tverbose()
+        self._print_msg("")
+        self.dprint('DBG7', "Calling %s() destructor" % self.__class__.__name__)
         self.trace_stop()
         self.cleanup()
         # Call base destructor
@@ -689,18 +691,17 @@ class TestUtil(NFSUtil):
         for name in self.testlist:
             testmethod = name + '_test'
             if name in testnames and hasattr(self, testmethod):
+                self._runtest = True
+                self._tverbose()
                 # Set current testname on object
                 self.testname = name
                 # Execute test
-                self.dprint('INFO', "Running test: %s" % name)
-                if self.createtraces:
-                    self.trace_start()
                 getattr(self, testmethod)(**kwargs)
 
     def _print_msg(self, msg, tid=None):
         """Display message to the screen and to the log file."""
         tidmsg_l = '' if tid is None else _test_map[tid]
-        tidmsg_s = _test_map_c[tid] if _isatty else tidmsg_l
+        tidmsg_s = _test_map_c.get(tid, tidmsg_l) if _isatty else tidmsg_l
         self.write_log(tidmsg_l + msg)
         print tidmsg_s + msg
         sys.stdout.flush()
@@ -780,6 +781,8 @@ class TestUtil(NFSUtil):
                 msg = msg.replace("\n", "\n          ")
                 self._print_msg(msg + tmsg, sgtid)
                 sys.stdout.flush()
+        if self.createtraces:
+            self.trace_stop()
         self._test_time()
 
     def _subgroup_id(self, subgroup, tid):
@@ -807,7 +810,8 @@ class TestUtil(NFSUtil):
             # This is the first test message or the start of a group,
             # so process the previous group if any and create a placeholder
             # for the current group
-            self._tverbose()
+            if not self._runtest:
+                self._tverbose()
             self.test_msgs.append([])
         # Match the given message to a sub-group or add it if no match
         grpid = self._subgroup_id(msg, tid)
@@ -829,12 +833,19 @@ class TestUtil(NFSUtil):
             msg = msg.replace("\n", "\n          ")
             self._print_msg(msg, tid)
 
+        if tid == HEAD:
+            if self._runtest:
+                self.dprint('INFO', "Running test '%s'" % self.testname)
+            self._runtest = False
+            if self.createtraces:
+                self.trace_start()
+
     def _test_time(self):
         """Add an INFO message having the time difference between the current
            time and the time of the last call to this method.
         """
         self.test_time.append(time.time())
-        if len(self.test_time) > 2:
+        if len(self.test_time) > 1:
             ttime = self.test_time[-1] - self.test_time[-2]
             self._test_msg(INFO, "TIME: %s" % self._print_time(ttime))
 
