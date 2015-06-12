@@ -27,7 +27,7 @@ from formatstr import FormatStr
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.3'
+__version__   = '1.0.4'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -57,7 +57,10 @@ def _init_debug():
         _debug_prefix[(2 << i)] = dbg.upper() + ': '
 _init_debug()
 
-class BaseObj(FormatStr):
+# Instantiate FormatStr object
+fstrobj = FormatStr()
+
+class BaseObj(object):
     """Base class so objects will inherit the methods providing the string
        representation of the object and a simple debug printing and logging
        mechanism.
@@ -109,6 +112,12 @@ class BaseObj(FormatStr):
 
            # Write data to log file
            x.write_log(data)
+
+           # Format the given arguments
+           out = x.format("{0:x} - {1}", 1, "hello")
+
+           # Format the object attributes set by set_attrlist()
+           out = x.format("{0:x} - {1}")
 
            # Print debug message only if OPTS bitmap matches the current
            # debug level mask
@@ -377,6 +386,25 @@ class BaseObj(FormatStr):
         """Flush data to log file."""
         if _logfh != None:
             _logfh.flush()
+
+    def format(self, fmt, *kwts, **kwds):
+        """Format the arguments and return the string using the format given.
+           If no arguments are given either positional or named then object
+           attributes set by set_attrlist() are used as positional arguments
+           and all object attributes are used as named arguments
+
+           fmt:
+               String format to use for the arguments, where {0}, {1}, etc.
+               are used for positional arguments and {name1}, {name2}, etc.
+               are used for named arguments given after fmt.
+        """
+        if len(kwts) == 0 and len(kwds) == 0:
+            # Use object attributes, both positional using _attrlist and
+            # named arguments using object's own dictionary
+            if self._attrlist is not None:
+                kwts = (getattr(self, attr) for attr in self._attrlist)
+            kwds = self.__dict__
+        return fstrobj.format(fmt, *kwts, **kwds)
 
     def dprint(self, level, msg, indent=0):
         """Print debug message if level is allowed by the verbose level
