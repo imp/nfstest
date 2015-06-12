@@ -946,8 +946,8 @@ class TestUtil(NFSUtil):
     def get_name(self):
         """Get unique name for this instance."""
         if not self._name:
-            t = time.localtime()
-            self._name = "%s_%d_%d%02d%02d%02d%02d%02d" % (self.progname, os.getpid(), t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec)
+            timestr = self.timestamp("{0:date:%Y%m%d%H%M%S_%q}")
+            self._name = "%s_%s" % (self.progname, timestr)
         return self._name
 
     def get_dirname(self, dir=None):
