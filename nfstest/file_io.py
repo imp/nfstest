@@ -994,6 +994,7 @@ class FileIO(BaseObj):
                 break
             except Exception:
                 errstr = "ERROR on file object %s (process #%d)\n" % (self.absfile, self.tid)
+                errstr += "Directory i-node: %d\n" % self.datadir_st.st_ino
                 ioerror = traceback.format_exc()
                 self._dprint("INFO", errstr+ioerror)
                 ret = 1
@@ -1050,6 +1051,7 @@ class FileIO(BaseObj):
         if not os.path.exists(self.datadir):
             # Create top level directory if it does not exist
             os.mkdir(self.datadir, 0777)
+        self.datadir_st = os.stat(self.datadir)
 
         if self.nprocs > 1:
             # setup interprocess queue
