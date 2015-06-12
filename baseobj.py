@@ -21,6 +21,7 @@ mechanism including methods to change the debug verbosity level and methods
 to add debug levels.
 """
 import re
+import time
 import nfstest_config as c
 from pprint import pformat
 from formatstr import FormatStr
@@ -37,6 +38,9 @@ _sindent = "    "
 _dlevel = 0
 _rlevel = 1
 _logfh = None
+_tstamp = True
+_tstampfmt = "{0:date:%H:%M:%S.%q - }"
+
 # Simple verbose level names
 _debug_map = {
     'none':  0,
@@ -103,6 +107,15 @@ class BaseObj(object):
 
            # Set global indentation to 4 spaces for displaying objects
            x.sindent(4)
+
+           # Do not display timestamp for dprint messages
+           x.tstamp(enable=False)
+
+           # Change timestamp format to include the date
+           x.tstamp(fmt="{0:date:%Y-%m-%d %H:%M:%S.%q} ")
+
+           # Get timestamp if enabled, else return an empty string
+           out = x.timestamp()
 
            # Open log file
            x.open_log(logfile)
@@ -362,6 +375,36 @@ class BaseObj(object):
             _sindent = " " * indent
         return _sindent
 
+    @staticmethod
+    def tstamp(enable=None, fmt=None):
+        """Enable/disable timestamps on dprint messages and/or
+           set the default format for timestamps
+
+           enable:
+               Boolean to enable/disable timestamps
+           fmt:
+               Set timestamp format
+        """
+        global _tstamp,_tstampfmt
+        if enable is not None:
+            _tstamp = enable
+        if fmt is not None:
+            _tstampfmt = fmt
+
+    @staticmethod
+    def timestamp(fmt=None):
+        """Return the timestamp if it is enabled.
+
+           fmt:
+               Timestamp format, default is given by the format
+               set by tstamp()
+        """
+        if _tstamp:
+            if fmt is None:
+                fmt = _tstampfmt
+            return fstrobj.format(fmt, time.time())
+        return ""
+
     def open_log(self, logfile):
         """Open log file."""
         global _logfh
@@ -425,8 +468,10 @@ class BaseObj(object):
                         prefix += _debug_prefix[bitmap]
                         break
                 # Add display prefix to the message
-                sp = ' ' * indent
-                ret = prefix + sp + msg
+                ret = prefix + self.timestamp()
+                if indent > 0:
+                    ret += " " * indent
+                ret += msg
                 indent += len(prefix)
             if indent > 0:
                 sp = ' ' * indent
