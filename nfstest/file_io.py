@@ -50,7 +50,6 @@ import fcntl
 import ctypes
 import signal
 import struct
-import datetime
 import traceback
 from random import Random
 import nfstest_config as c
@@ -409,11 +408,14 @@ class FileIO(BaseObj):
         # Set verbose level mask
         self.debug_level(self.verbose)
 
+        # Set timestamp format to include the date and time
+        self.tstamp(fmt="{0:date:%Y-%m-%d %H:%M:%S.%q}  ")
+
         self.logbase = None
         if self.createlog or self.createlogs:
             # Create main log file
-            datetimestr = "{0:%Y%m%d%H%M%S}".format(datetime.datetime.now())
-            logname = "%s_%s_%d" % (self.progname, datetimestr, os.getpid())
+            datetimestr = self.timestamp("{0:date:%Y%m%d%H%M%S_%q}")
+            logname = "%s_%s" % (self.progname, datetimestr)
             self.logbase = os.path.join(self.logdir, logname)
             self.logfile = self.logbase + ".log"
             self.open_log(self.logfile)
@@ -455,8 +457,6 @@ class FileIO(BaseObj):
         """Local dprint function, if called from a subprocess send the
            message to the main process, otherwise use dprint on message
         """
-        dt = datetime.datetime.now()
-        msg = "%d-%02d-%02d %02d:%02d:%02d.%06d  %s" % (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond, msg)
         if self.queue and not self.createlogs:
             # Send message to main process
             self.queue.put([level,msg])
