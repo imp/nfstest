@@ -431,10 +431,10 @@ class FileIO(BaseObj):
         # Load share library for calling C library functions
         try:
             # Linux
-            self.libc = ctypes.CDLL('libc.so.6')
+            self.libc = ctypes.CDLL('libc.so.6', use_errno=True)
         except:
             # MacOS
-            self.libc = ctypes.CDLL('libc.dylib')
+            self.libc = ctypes.CDLL('libc.dylib', use_errno=True)
         self.libc.malloc.argtypes = [ctypes.c_long]
         self.libc.malloc.restype = ctypes.c_void_p
         self.libc.posix_memalign.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_long, ctypes.c_long]
@@ -682,11 +682,7 @@ class FileIO(BaseObj):
             out = self.libc.truncate(self.absfile, nsize)
             if out == -1:
                 err = ctypes.get_errno()
-                # Need to check errno because python ctypes library has a bug
-                # when using truncate() on a broken symbolic link returns -1
-                # but the errno is set to 0, it should be ENOENT
-                if err != 0:
-                    raise OSError(err, os.strerror(err), fileobj.name)
+                raise OSError(err, os.strerror(err), fileobj.name)
             else:
                 self.ntrunc += 1
                 fileobj.size = nsize
