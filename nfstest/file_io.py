@@ -682,6 +682,10 @@ class FileIO(BaseObj):
             out = self.libc.truncate(self.absfile, nsize)
             if out == -1:
                 err = ctypes.get_errno()
+                if hasattr(fileobj, 'srcname') and err == errno.ENOENT:
+                    # Make sure not to fail if it is a broken symbolic link
+                    self._dprint("DBG2", "TRUNC   %s: broken symbolic link" % fileobj.name)
+                    return
                 raise OSError(err, os.strerror(err), fileobj.name)
             else:
                 self.ntrunc += 1
