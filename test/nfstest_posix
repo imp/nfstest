@@ -27,7 +27,7 @@ from time import sleep
 
 # Module constants
 __author__    = 'Jorge Mora (%s)' % c.NFSTEST_AUTHOR_EMAIL
-__version__   = '1.0.2'
+__version__   = '1.0.3'
 __copyright__ = "Copyright (C) 2012 NetApp, Inc."
 __license__   = "GPL v2"
 
@@ -244,7 +244,12 @@ class PosixTest(TestUtil):
 
         # Load share library - used for POSIX functions not implemented
         # in the posix module
-        self.libc = ctypes.CDLL('libc.so.6')
+        try:
+            # Linux
+            self.libc = ctypes.CDLL('libc.so.6', use_errno=True)
+        except:
+            # MacOS
+            self.libc = ctypes.CDLL('libc.dylib', use_errno=True)
         self.libc.telldir.argtypes = ctypes.c_void_p,
         self.libc.telldir.restype  = ctypes.c_long
         self.libc.seekdir.argtypes = ctypes.c_ulong, ctypes.c_long
