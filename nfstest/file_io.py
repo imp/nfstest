@@ -429,12 +429,8 @@ class FileIO(BaseObj):
         self.PAGESIZE = os.sysconf(os.sysconf_names['SC_PAGESIZE'])
 
         # Load share library for calling C library functions
-        try:
-            # Linux
-            self.libc = ctypes.CDLL('libc.so.6', use_errno=True)
-        except:
-            # MacOS
-            self.libc = ctypes.CDLL('libc.dylib', use_errno=True)
+        from ctypes.util import find_library
+        self.libc = ctypes.CDLL(find_library('c'), use_errno=True)
         self.libc.malloc.argtypes = [ctypes.c_long]
         self.libc.malloc.restype = ctypes.c_void_p
         self.libc.posix_memalign.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_long, ctypes.c_long]

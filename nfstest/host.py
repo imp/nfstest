@@ -140,7 +140,8 @@ class Host(BaseObj):
 
         # Load share library - used for functions not implemented
         # in the python modules "os" or "posix"
-        self.libc = ctypes.CDLL('libc.so.6')
+        from ctypes.util import find_library
+        self.libc = ctypes.CDLL(find_library('c'))
 
     def __del__(self):
         """Destructor
